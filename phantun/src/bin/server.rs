@@ -2,7 +2,10 @@ use clap::{crate_version, Arg, ArgAction, Command};
 use fake_tcp::packet::MAX_PACKET_LEN;
 use fake_tcp::Stack;
 use log::{debug, error, info};
-use phantun::utils::{assign_ipv6_address, new_udp_reuseport};
+use phantun::control_plane::{ControlMode, ControlState, DownReason, start_control_plane};
+use phantun::utils::{
+    assign_ipv6_address, new_udp_reuseport, read_interface_kernel_state, wait_for_termination_signal,
+};
 use std::fs;
 use std::io;
 use std::net::Ipv4Addr;
@@ -101,6 +104,15 @@ async fn main() -> io::Result<()> {
                       Note: ensure this file's size does not exceed the MTU of the outgoing interface. \
                       The content is always sent out in a single packet and will not be further segmented")
         )
+        .arg(
+            Arg::new("control_target")
+                .long("control-target")
+                .required(false)
+                .value_name("UNIX_PATH")
+                .help("Push control-plane status to this UNIX socket path. Repeat this option to configure multiple targets")
+                .action(ArgAction::Append)
+                .num_args(1)
+        )
         .get_matches();
 
     let local_port: u16 = matches
@@ -142,10 +154,22 @@ async fn main() -> io::Result<()> {
     };
 
     let tun_name = matches.get_one::<String>("tun").unwrap();
+    let control_targets: Vec<String> = matches
+        .get_many::<String>("control_target")
+        .map(|targets| targets.cloned().collect())
+        .unwrap_or_default();
     let handshake_packet: Option<Vec<u8>> = matches
         .get_one::<String>("handshake_packet")
         .map(fs::read)
         .transpose()?;
+
+    let control_state = ControlState::new(
+        ControlMode::Server,
+        Some(format!("0.0.0.0:{local_port}")),
+        Some(remote_addr.to_string()),
+    );
+    let control_reporter = start_control_plane(&control_targets, control_state)?;
+    control_reporter.publish_starting();
 
     let num_cpus = num_cpus::get();
     info!("{} cores available", num_cpus);
@@ -163,7 +187,15 @@ async fn main() -> io::Result<()> {
         assign_ipv6_address(tun[0].name(), tun_local6, tun_peer6);
     }
 
-    info!("Created TUN device {}", tun[0].name());
+    let tun_device = tun[0].name().to_string();
+    let kernel_state = read_interface_kernel_state(&tun_device);
+    info!("Created TUN device {}", tun_device);
+    control_reporter.publish_up(
+        Some(tun_device),
+        kernel_state.mtu,
+        kernel_state.addr4,
+        kernel_state.addr6,
+    );
 
     //thread::sleep(time::Duration::from_secs(5));
     let mut stack = Stack::new(tun, tun_local, tun_local6);
@@ -262,5 +294,25 @@ async fn main() -> io::Result<()> {
         }
     });
 
-    tokio::join!(main_loop).0.unwrap()
+    tokio::select! {
+        main_result = main_loop => {
+            let exit_result = match main_result {
+                Ok(result) => result,
+                Err(err) => Err(io::Error::other(format!("main loop join failure: {err}"))),
+            };
+
+            if exit_result.is_ok() {
+                control_reporter.publish_down(DownReason::ProcessExit);
+            } else {
+                control_reporter.publish_down(DownReason::MainLoopError);
+            }
+
+            exit_result
+        }
+        signal_name = wait_for_termination_signal() => {
+            info!("Received {}, shutting down", signal_name);
+            control_reporter.publish_down(DownReason::Signal);
+            Ok(())
+        }
+    }
 }

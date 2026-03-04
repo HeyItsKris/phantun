@@ -23,6 +23,7 @@ A lightweight and fast UDP to TCP obfuscator.
     * [4. Start Phantun daemon](#4-start-phantun-daemon)
         * [Server](#server)
         * [Client](#client)
+    * [5. Control plane (Optional)](#5-control-plane-optional)
 * [MTU overhead](#mtu-overhead)
     * [MTU calculation for WireGuard](#mtu-calculation-for-wireguard)
 * [Version compatibility](#version-compatibility)
@@ -255,6 +256,21 @@ RUST_LOG=info /usr/local/bin/phantun_client --local 127.0.0.1:1234 --remote exam
 
 [Back to TOC](#table-of-contents)
 
+## 5. Control plane (Optional)
+
+Phantun can push control-plane state updates (`starting` / `up` / `down`) to one or more UNIX
+domain socket targets. Use repeatable `--control-target`:
+
+```
+RUST_LOG=info /usr/local/bin/phantun_client --local 127.0.0.1:1234 --remote 10.0.0.1:4567 \
+  --control-target /run/phantun/agent-a.sock \
+  --control-target /run/phantun/agent-b.sock
+```
+
+Protocol and message schema are documented in [design/control-plane-protocol.md](design/control-plane-protocol.md).
+
+[Back to TOC](#table-of-contents)
+
 # MTU overhead
 
 Phantun aims to keep tunneling overhead to the minimum. The overhead compared to a plain UDP packet
@@ -391,4 +407,3 @@ option. Files in the project may not be
 copied, modified, or distributed except according to those terms.
 
 [Back to TOC](#table-of-contents)
-
