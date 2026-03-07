@@ -84,12 +84,12 @@ pub struct ControlMessage {
 }
 
 impl ControlMessage {
-    pub fn from_published(message_type: MessageType, published: &PublishedState) -> Self {
+    pub fn from_published(message_type: MessageType, id: String, published: &PublishedState) -> Self {
         Self {
             v: 1,
             message_type,
             ts: unix_timestamp_millis(),
-            id: seq_to_message_id(published.seq),
+            id,
             data: published.state.clone(),
         }
     }
@@ -118,13 +118,14 @@ impl InboundMessage {
     }
 }
 
-pub fn seq_to_message_id(seq: u64) -> String {
-    format!("m{seq}")
+pub fn build_message_id(state_seq: u64, message_seq: u64) -> String {
+    format!("m{state_seq}-{message_seq}")
 }
 
 pub fn message_id_to_seq(message_id: &str) -> Option<u64> {
     let suffix = message_id.strip_prefix('m')?;
-    suffix.parse().ok()
+    let (state_seq, _) = suffix.split_once('-')?;
+    state_seq.parse().ok()
 }
 
 fn unix_timestamp_millis() -> u64 {
@@ -138,7 +139,7 @@ fn unix_timestamp_millis() -> u64 {
 mod tests {
     use super::{
         ControlMessage, ControlMode, ControlState, InboundMessage, MessageType, PublishedState,
-        StopReason, TunnelState, message_id_to_seq, seq_to_message_id,
+        StopReason, TunnelState, build_message_id, message_id_to_seq,
     };
 
     #[test]
@@ -154,22 +155,24 @@ mod tests {
 
         let msg = ControlMessage::from_published(
             MessageType::Event,
+            build_message_id(42, 7),
             &PublishedState { seq: 42, state },
         );
         let json = serde_json::to_string(&msg).unwrap();
 
         assert!(json.contains("\"type\":\"event\""));
-        assert!(json.contains("\"id\":\"m42\""));
+        assert!(json.contains("\"id\":\"m42-7\""));
         assert!(json.contains("\"state\":\"stopping\""));
         assert!(json.contains("\"reason\":\"signal\""));
     }
 
     #[test]
     fn parse_ack_message_id() {
-        let inbound: InboundMessage = serde_json::from_str(r#"{"type":"ack","id":"m15"}"#).unwrap();
+        let inbound: InboundMessage =
+            serde_json::from_str(r#"{"type":"ack","id":"m15-99"}"#).unwrap();
         assert_eq!(inbound.acked_seq(), Some(15));
-        assert_eq!(seq_to_message_id(27), "m27");
-        assert_eq!(message_id_to_seq("m27"), Some(27));
+        assert_eq!(build_message_id(27, 3), "m27-3");
+        assert_eq!(message_id_to_seq("m27-3"), Some(27));
         assert_eq!(message_id_to_seq("bad"), None);
     }
 }

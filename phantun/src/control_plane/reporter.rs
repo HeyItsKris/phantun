@@ -102,6 +102,11 @@ impl ControlReporter {
         let mut next_state = current.state;
         mutator(&mut next_state);
 
+        // Emit events only when state actually changes.
+        if next_state == current.state {
+            return None;
+        }
+
         let next_seq = current.seq.wrapping_add(1);
         let _ = tx.send_replace(PublishedState {
             seq: next_seq,

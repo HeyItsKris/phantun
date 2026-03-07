@@ -1,4 +1,4 @@
-use super::model::{ControlMessage, InboundMessage, MessageType, PublishedState};
+use super::model::{ControlMessage, InboundMessage, MessageType, PublishedState, build_message_id};
 use super::sync_state::ControlSyncState;
 use log::{debug, info, warn};
 use std::io::{self, ErrorKind};
@@ -50,6 +50,7 @@ pub async fn run_unix_sink(
 ) {
     let mut backoff = MIN_BACKOFF;
     let mut next_warn_at = Instant::now();
+    let mut message_seq: u64 = 0;
 
     loop {
         match UnixStream::connect(&target.path).await {
@@ -59,7 +60,14 @@ pub async fn run_unix_sink(
                 let snapshot = rx.borrow().clone();
 
                 if let Err(err) =
-                    send_published(&mut write_half, &snapshot, MessageType::Snapshot, &sync).await
+                    send_published(
+                        &mut write_half,
+                        &snapshot,
+                        MessageType::Snapshot,
+                        &sync,
+                        &mut message_seq,
+                    )
+                    .await
                 {
                     warn!(
                         "control-plane failed to send snapshot to {}: {}",
@@ -83,7 +91,8 @@ pub async fn run_unix_sink(
                                     &mut write_half,
                                     &published,
                                     MessageType::Event,
-                                    &sync
+                                    &sync,
+                                    &mut message_seq,
                                 ).await {
                                     warn!(
                                         "control-plane failed to send event to {}: {}",
@@ -140,8 +149,12 @@ async fn send_published(
     published: &PublishedState,
     message_type: MessageType,
     sync: &ControlSyncState,
+    message_seq: &mut u64,
 ) -> io::Result<()> {
-    let message = ControlMessage::from_published(message_type, published);
+    let message_id = build_message_id(published.seq, *message_seq);
+    *message_seq = message_seq.wrapping_add(1);
+
+    let message = ControlMessage::from_published(message_type, message_id, published);
     let mut payload = serde_json::to_vec(&message)
         .map_err(|err| io::Error::new(ErrorKind::InvalidData, err.to_string()))?;
     payload.push(b'\n');

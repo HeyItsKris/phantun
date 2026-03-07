@@ -62,7 +62,7 @@ Fields:
 - `v`: protocol version (currently `1`)
 - `type`: `snapshot | event`
 - `ts`: Unix timestamp in milliseconds
-- `id`: message id string (`m<seq>`, derived from state sequence)
+- `id`: message id string (`m<state_seq>-<message_seq>`)
 - `data`: state payload
   - `state`: `starting | up | stopping | down`
   - `reason`: `null | process_exit | main_loop_error | signal` (`reason` is set only on `stopping`)
@@ -100,6 +100,7 @@ Rules:
 1. ACK is only required for `stopping`.
 2. `starting`/`up` do not require ACK.
 3. `down` does not require ACK; sender only waits for local write completion (bounded timeout).
+4. ACK must echo the exact message `id`; sender extracts `state_seq` from the `id` prefix.
 
 `up` state metadata (`dev`, `mtu`, `addr4`, `addr6`) is collected from kernel interface state
 after TUN setup, not from raw CLI input values.
