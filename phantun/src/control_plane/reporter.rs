@@ -1,18 +1,27 @@
-use super::model::{ControlState, DownReason, TunnelState};
+use super::model::{ControlState, PublishedState, StopReason, TunnelState};
+use super::sync_state::ControlSyncState;
+use std::time::Duration;
 use tokio::sync::watch;
 
 #[derive(Clone, Debug)]
 pub struct ControlReporter {
-    tx: Option<watch::Sender<ControlState>>,
+    tx: Option<watch::Sender<PublishedState>>,
+    sync: Option<ControlSyncState>,
 }
 
 impl ControlReporter {
     pub fn disabled() -> Self {
-        Self { tx: None }
+        Self {
+            tx: None,
+            sync: None,
+        }
     }
 
-    pub(crate) fn new(tx: watch::Sender<ControlState>) -> Self {
-        Self { tx: Some(tx) }
+    pub(crate) fn new(tx: watch::Sender<PublishedState>, sync: ControlSyncState) -> Self {
+        Self {
+            tx: Some(tx),
+            sync: Some(sync),
+        }
     }
 
     pub fn publish_starting(&self) {
@@ -39,23 +48,66 @@ impl ControlReporter {
         });
     }
 
-    pub fn publish_down(&self, reason: DownReason) {
+    pub fn publish_stopping(&self, reason: StopReason) -> Option<u64> {
         self.update(|state| {
-            state.state = TunnelState::Down;
+            state.state = TunnelState::Stopping;
             state.reason = Some(reason);
-        });
+        })
     }
 
-    fn update<F>(&self, mutator: F)
+    pub fn publish_down(&self) -> Option<u64> {
+        self.update(|state| {
+            state.state = TunnelState::Down;
+            state.reason = None;
+        })
+    }
+
+    pub async fn publish_stopping_and_wait_ack(
+        &self,
+        reason: StopReason,
+        timeout: Duration,
+    ) -> bool {
+        let Some(seq) = self.publish_stopping(reason) else {
+            return true;
+        };
+
+        let Some(sync) = &self.sync else {
+            return true;
+        };
+
+        sync.acked.wait_for(seq, timeout).await
+    }
+
+    pub async fn publish_down_and_wait_delivery(&self, timeout: Duration) -> bool {
+        let Some(seq) = self.publish_down() else {
+            return true;
+        };
+
+        let Some(sync) = &self.sync else {
+            return true;
+        };
+
+        sync.delivered.wait_for(seq, timeout).await
+    }
+
+    fn update<F>(&self, mutator: F) -> Option<u64>
     where
         F: FnOnce(&mut ControlState),
     {
         let Some(tx) = &self.tx else {
-            return;
+            return None;
         };
 
-        let mut next = tx.borrow().clone();
-        mutator(&mut next);
-        let _ = tx.send_replace(next);
+        let current = tx.borrow().clone();
+        let mut next_state = current.state;
+        mutator(&mut next_state);
+
+        let next_seq = current.seq.wrapping_add(1);
+        let _ = tx.send_replace(PublishedState {
+            seq: next_seq,
+            state: next_state,
+        });
+
+        Some(next_seq)
     }
 }

@@ -28,7 +28,8 @@ For each target, Phantun runs an independent async sender task:
 1. Try `connect()`.
 2. On success, send one `snapshot`.
 3. Send `event` for every state change.
-4. If write fails or peer closes, reconnect with exponential backoff.
+4. Read inbound messages from the same stream (used for `ack`).
+5. If write fails or peer closes, reconnect with exponential backoff.
 
 `snapshot` is always sent after reconnect so consumers can resync without replay logs.
 
@@ -61,10 +62,10 @@ Fields:
 - `v`: protocol version (currently `1`)
 - `type`: `snapshot | event`
 - `ts`: Unix timestamp in milliseconds
-- `id`: message id string (unique per sender task)
+- `id`: message id string (`m<seq>`, derived from state sequence)
 - `data`: state payload
-  - `state`: `starting | up | down`
-  - `reason`: `null | process_exit | main_loop_error | signal`
+  - `state`: `starting | up | stopping | down`
+  - `reason`: `null | process_exit | main_loop_error | signal` (`reason` is set only on `stopping`)
   - `mode`: `client | server`
   - `local`: local endpoint string when available
   - `remote`: remote endpoint string when available
@@ -77,15 +78,28 @@ Fields:
 
 - `starting`: process is starting and control-plane is active.
 - `up`: data-plane is initialized and ready (does **not** imply end-to-end peer reachability).
-- `down`: process is shutting down or main loop failed.
+- `stopping`: process is requesting coordinated shutdown.
+- `down`: data-plane is fully stopped.
 
-`down.reason` values in v1:
+`stopping.reason` values in v1:
 
 - `process_exit`
 - `main_loop_error`
 - `signal`
 
-`signal` is emitted when process receives termination signals (SIGINT/SIGTERM).
+`signal` is emitted when process receives termination signals (`SIGINT`/`SIGTERM`).
+
+`stopping` requires consumer-side ACK:
+
+```json
+{"type":"ack","id":"m42"}
+```
+
+Rules:
+
+1. ACK is only required for `stopping`.
+2. `starting`/`up` do not require ACK.
+3. `down` does not require ACK; sender only waits for local write completion (bounded timeout).
 
 `up` state metadata (`dev`, `mtu`, `addr4`, `addr6`) is collected from kernel interface state
 after TUN setup, not from raw CLI input values.
@@ -98,6 +112,7 @@ Consumer should:
 2. Parse NDJSON line-by-line.
 3. Treat first message after each connection as authoritative `snapshot`.
 4. Handle duplicate/late `event` safely (idempotent state machine).
+5. On `stopping`, send back one `ack` with the same message `id`.
 
 ## 7. Compatibility policy
 

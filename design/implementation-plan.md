@@ -6,7 +6,7 @@
 
 1. 控制面默认关闭。
 2. `up` 语义是“数据面就绪”，不探测对端可达性。
-3. `down.reason` 首版使用：`process_exit` / `main_loop_error` / `signal`。
+3. `reason` 放在 `stopping`，首版使用：`process_exit` / `main_loop_error` / `signal`。
 4. `README.md` 只加一个简短段落，详细协议放单独文档并引用。
 5. 连接方向改为 **push fan-out**：Phantun 主动连接多个控制面目标并推送状态。
 
@@ -23,7 +23,7 @@
 新增 `phantun/src/control_plane/`：
 
 1. `model.rs`：协议模型（`snapshot/event`、state、reason、metadata）。
-2. `reporter.rs`：数据面可调用的上报句柄（`publish_starting/up/down`）。
+2. `reporter.rs`：数据面可调用的上报句柄（`publish_starting/up/stopping/down`）。
 3. `runtime.rs`：控制面运行时（状态总线 + 多目标 fan-out 调度）。
 4. `sink_unix.rs`：单目标 Unix socket 推送与重连逻辑。
 
@@ -40,8 +40,8 @@
 3. `ts`：毫秒时间戳
 4. `id`：消息 id（字符串）
 5. `data`：
-   - `state`: `starting | up | down`
-   - `reason`: `null | process_exit | main_loop_error | signal`
+   - `state`: `starting | up | stopping | down`
+   - `reason`: `null | process_exit | main_loop_error | signal`（仅 `stopping` 有值）
    - `mode`: `client | server`
    - `local`, `remote`, `dev`, `mtu`, `addr4`, `addr6`（可空）
 
@@ -49,7 +49,8 @@
 
 1. 每个 target 每次重连成功后先发 `snapshot`（全量当前状态）。
 2. 后续状态变化发 `event`（增量语义，但 payload 仍为完整状态快照，便于消费端无状态处理）。
-3. 连接中断期间不补历史事件；重连后的 `snapshot` 负责状态收敛。
+3. `stopping` 需要 consumer ACK（`{"type":"ack","id":"mN"}`），`down` 不需要 ACK。
+4. 连接中断期间不补历史事件；重连后的 `snapshot` 负责状态收敛。
 
 ## 4. push fan-out 运行机制
 
@@ -78,6 +79,7 @@
 1. 指数退避：`200ms -> ... -> 10s` 上限。
 2. 加 `jitter` 防止多目标同时抖动重连。
 3. 不中断数据面，不因控制面失败退出进程（降级运行 + 日志告警）。
+4. `snapshot` 发送失败也统一走退避，避免重连风暴。
 
 ## 5. 数据面接入点（最小改动）
 
@@ -85,7 +87,7 @@
 
 1. 参数解析后，构造 `ControlReporter`（如果启用）。
 2. TUN 创建并关键参数确定后上报 `up`。
-3. 主任务退出路径统一上报 `down`。
+3. 退出路径改为 `stopping(reason) -> down`。
 
 约束：
 
@@ -118,7 +120,7 @@
 2. 配置多个 target：多个 consumer 都能收到同样状态序列。
 3. 某个 consumer 挂掉：其余 consumer 不受影响，数据面不受影响。
 4. consumer 重启后：首条 `snapshot` 能把状态拉齐。
-5. 关键状态顺序正确：`starting -> up -> down`。
+5. 关键状态顺序正确：`starting -> up -> stopping -> down`。
 
 ## 8. 风险与对策
 
@@ -136,4 +138,3 @@
 3. 增加协议文档 `design/control-plane-protocol.md`。
 4. 在 `README.md` 增加简短入口说明与文档链接。
 5. 做本地验证（单 target、多 target、断连重连）。
-

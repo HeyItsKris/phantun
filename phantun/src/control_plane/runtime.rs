@@ -1,6 +1,7 @@
-use super::model::ControlState;
+use super::model::{ControlState, PublishedState};
 use super::reporter::ControlReporter;
 use super::sink_unix::{parse_unix_target, run_unix_sink};
+use super::sync_state::ControlSyncState;
 use log::{info, warn};
 use std::collections::HashSet;
 use std::io;
@@ -15,14 +16,15 @@ pub fn start_control_plane(
     }
 
     let parsed_targets = parse_targets(targets)?;
-    let (tx, rx) = watch::channel(initial_state);
+    let sync = ControlSyncState::default();
+    let (tx, rx) = watch::channel(PublishedState::new(initial_state));
 
     for target in parsed_targets {
         info!("control-plane target enabled: {}", target.label);
-        tokio::spawn(run_unix_sink(target, rx.clone()));
+        tokio::spawn(run_unix_sink(target, rx.clone(), sync.clone()));
     }
 
-    Ok(ControlReporter::new(tx))
+    Ok(ControlReporter::new(tx, sync))
 }
 
 fn parse_targets(targets: &[String]) -> io::Result<Vec<super::sink_unix::UnixTarget>> {

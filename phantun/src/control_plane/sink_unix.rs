@@ -1,9 +1,11 @@
-use super::model::{ControlMessage, ControlState, MessageType};
+use super::model::{ControlMessage, InboundMessage, MessageType, PublishedState};
+use super::sync_state::ControlSyncState;
 use log::{debug, info, warn};
 use std::io::{self, ErrorKind};
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::unix::OwnedWriteHalf;
 use tokio::net::UnixStream;
 use tokio::sync::watch;
 use tokio::time::{Instant, sleep};
@@ -41,42 +43,73 @@ pub fn parse_unix_target(raw: &str) -> io::Result<UnixTarget> {
     })
 }
 
-pub async fn run_unix_sink(target: UnixTarget, mut rx: watch::Receiver<ControlState>) {
-    let mut message_id: u64 = 0;
+pub async fn run_unix_sink(
+    target: UnixTarget,
+    mut rx: watch::Receiver<PublishedState>,
+    sync: ControlSyncState,
+) {
     let mut backoff = MIN_BACKOFF;
     let mut next_warn_at = Instant::now();
 
     loop {
         match UnixStream::connect(&target.path).await {
-            Ok(mut stream) => {
-                info!("control-plane connected to {}", target.label);
-                backoff = MIN_BACKOFF;
-                next_warn_at = Instant::now();
+            Ok(stream) => {
+                let (read_half, mut write_half) = stream.into_split();
+                let mut reader = BufReader::new(read_half);
+                let snapshot = rx.borrow().clone();
 
                 if let Err(err) =
-                    send_latest(&mut stream, &rx, MessageType::Snapshot, &mut message_id).await
+                    send_published(&mut write_half, &snapshot, MessageType::Snapshot, &sync).await
                 {
                     warn!(
                         "control-plane failed to send snapshot to {}: {}",
                         target.label, err
                     );
-                    continue;
-                }
+                } else {
+                    info!("control-plane connected to {}", target.label);
+                    backoff = MIN_BACKOFF;
+                    next_warn_at = Instant::now();
 
-                loop {
-                    if rx.changed().await.is_err() {
-                        debug!("control-plane state publisher closed, sink stopping");
-                        return;
-                    }
+                    loop {
+                        tokio::select! {
+                            state_change = rx.changed() => {
+                                if state_change.is_err() {
+                                    debug!("control-plane state publisher closed, sink stopping");
+                                    return;
+                                }
+                                let published = rx.borrow().clone();
 
-                    if let Err(err) =
-                        send_latest(&mut stream, &rx, MessageType::Event, &mut message_id).await
-                    {
-                        warn!(
-                            "control-plane failed to send event to {}: {}",
-                            target.label, err
-                        );
-                        break;
+                                if let Err(err) = send_published(
+                                    &mut write_half,
+                                    &published,
+                                    MessageType::Event,
+                                    &sync
+                                ).await {
+                                    warn!(
+                                        "control-plane failed to send event to {}: {}",
+                                        target.label, err
+                                    );
+                                    break;
+                                }
+                            }
+                            inbound = read_inbound(&mut reader) => {
+                                match inbound {
+                                    Ok(Some(message)) => {
+                                        if let Some(seq) = message.acked_seq() {
+                                            sync.acked.mark(seq).await;
+                                        }
+                                    }
+                                    Ok(None) => {}
+                                    Err(err) => {
+                                        warn!(
+                                            "control-plane inbound stream error on {}: {}",
+                                            target.label, err
+                                        );
+                                        break;
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -102,24 +135,46 @@ pub async fn run_unix_sink(target: UnixTarget, mut rx: watch::Receiver<ControlSt
     }
 }
 
-async fn send_latest(
-    stream: &mut UnixStream,
-    rx: &watch::Receiver<ControlState>,
+async fn send_published(
+    write_half: &mut OwnedWriteHalf,
+    published: &PublishedState,
     message_type: MessageType,
-    message_id: &mut u64,
+    sync: &ControlSyncState,
 ) -> io::Result<()> {
-    let message = ControlMessage::new(
-        message_type,
-        format!("m{}", *message_id),
-        rx.borrow().clone(),
-    );
-    *message_id = message_id.wrapping_add(1);
-
+    let message = ControlMessage::from_published(message_type, published);
     let mut payload = serde_json::to_vec(&message)
         .map_err(|err| io::Error::new(ErrorKind::InvalidData, err.to_string()))?;
     payload.push(b'\n');
 
-    stream.write_all(&payload).await
+    write_half.write_all(&payload).await?;
+    sync.delivered.mark(published.seq).await;
+    Ok(())
+}
+
+async fn read_inbound<R>(reader: &mut BufReader<R>) -> io::Result<Option<InboundMessage>>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let mut line = String::new();
+    let n = reader.read_line(&mut line).await?;
+    if n == 0 {
+        return Err(io::Error::new(
+            ErrorKind::BrokenPipe,
+            "control consumer closed connection",
+        ));
+    }
+
+    if line.trim().is_empty() {
+        return Ok(None);
+    }
+
+    match serde_json::from_str::<InboundMessage>(line.trim()) {
+        Ok(message) => Ok(Some(message)),
+        Err(err) => {
+            debug!("Ignoring malformed control-plane inbound message: {}", err);
+            Ok(None)
+        }
+    }
 }
 
 fn next_backoff(current: Duration) -> Duration {

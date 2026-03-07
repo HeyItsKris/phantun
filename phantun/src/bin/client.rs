@@ -2,7 +2,7 @@ use clap::{crate_version, Arg, ArgAction, Command};
 use fake_tcp::packet::MAX_PACKET_LEN;
 use fake_tcp::{Socket, Stack};
 use log::{debug, error, info};
-use phantun::control_plane::{ControlMode, ControlState, DownReason, start_control_plane};
+use phantun::control_plane::{ControlMode, ControlState, StopReason, start_control_plane};
 use phantun::utils::{
     assign_ipv6_address, new_udp_reuseport, read_interface_kernel_state, udp_recv_pktinfo,
     wait_for_termination_signal,
@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
+use std::time::Duration;
 use std::sync::Arc;
 use tokio::sync::{Notify, RwLock};
 use tokio::time;
@@ -18,6 +19,9 @@ use tokio_tun::TunBuilder;
 use tokio_util::sync::CancellationToken;
 
 use phantun::UDP_TTL;
+
+const STOPPING_ACK_TIMEOUT: Duration = Duration::from_millis(800);
+const DOWN_DELIVERY_TIMEOUT: Duration = Duration::from_millis(300);
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
@@ -204,7 +208,7 @@ async fn main() -> io::Result<()> {
 
     let mut stack = Stack::new(tun, tun_peer, tun_peer6);
 
-    let main_loop = tokio::spawn(async move {
+    let mut main_loop = tokio::spawn(async move {
         let mut buf_r = [0u8; MAX_PACKET_LEN];
 
         loop {
@@ -356,27 +360,59 @@ async fn main() -> io::Result<()> {
         }
     });
 
-    let exit_result = tokio::select! {
-        main_result = main_loop => {
+    tokio::select! {
+        main_result = (&mut main_loop) => {
             let exit_result = match main_result {
                 Ok(result) => result,
                 Err(err) => Err(io::Error::other(format!("main loop join failure: {err}"))),
             };
-
-            if exit_result.is_ok() {
-                control_reporter.publish_down(DownReason::ProcessExit);
+            let stop_reason = if exit_result.is_ok() {
+                StopReason::ProcessExit
             } else {
-                control_reporter.publish_down(DownReason::MainLoopError);
+                StopReason::MainLoopError
+            };
+
+            if !control_reporter
+                .publish_stopping_and_wait_ack(stop_reason, STOPPING_ACK_TIMEOUT)
+                .await
+            {
+                info!("No stopping ACK received within {:?}", STOPPING_ACK_TIMEOUT);
+            }
+            if !control_reporter
+                .publish_down_and_wait_delivery(DOWN_DELIVERY_TIMEOUT)
+                .await
+            {
+                info!(
+                    "Down event delivery was not observed within {:?}",
+                    DOWN_DELIVERY_TIMEOUT
+                );
             }
 
             exit_result
         }
         signal_name = wait_for_termination_signal() => {
-            info!("Received {}, shutting down", signal_name);
-            control_reporter.publish_down(DownReason::Signal);
+            info!("Received {}, initiating shutdown handshake", signal_name);
+            if !control_reporter
+                .publish_stopping_and_wait_ack(StopReason::Signal, STOPPING_ACK_TIMEOUT)
+                .await
+            {
+                info!("No stopping ACK received within {:?}", STOPPING_ACK_TIMEOUT);
+            }
+
+            main_loop.abort();
+            let _ = (&mut main_loop).await;
+
+            if !control_reporter
+                .publish_down_and_wait_delivery(DOWN_DELIVERY_TIMEOUT)
+                .await
+            {
+                info!(
+                    "Down event delivery was not observed within {:?}",
+                    DOWN_DELIVERY_TIMEOUT
+                );
+            }
+
             Ok(())
         }
-    };
-
-    exit_result
+    }
 }

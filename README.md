@@ -258,7 +258,7 @@ RUST_LOG=info /usr/local/bin/phantun_client --local 127.0.0.1:1234 --remote exam
 
 ## 5. Control plane (Optional)
 
-Phantun can push control-plane state updates (`starting` / `up` / `down`) to one or more UNIX
+Phantun can push control-plane state updates (`starting` / `up` / `stopping` / `down`) to one or more UNIX
 domain socket targets. Use repeatable `--control-target`:
 
 ```
