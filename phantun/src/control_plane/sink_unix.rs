@@ -57,7 +57,9 @@ pub async fn run_unix_sink(
             Ok(stream) => {
                 let (read_half, mut write_half) = stream.into_split();
                 let mut reader = BufReader::new(read_half);
-                let snapshot = rx.borrow().clone();
+                // Mark current version as observed so reconnect does not emit
+                // an immediate duplicate event for the same state.
+                let snapshot = rx.borrow_and_update().clone();
 
                 if let Err(err) =
                     send_published(
@@ -201,4 +203,29 @@ fn jitter(base: Duration) -> Duration {
         .unwrap_or_default()
         .subsec_nanos() as u64;
     Duration::from_millis(seed % max_jitter_ms)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::control_plane::model::{ControlMode, ControlState, PublishedState};
+    use tokio::sync::watch;
+
+    #[test]
+    fn borrow_and_update_clears_pending_change_after_snapshot() {
+        let initial = PublishedState::new(ControlState::new(ControlMode::Server, None, None));
+        let (tx, mut rx) = watch::channel(initial);
+
+        let mut up_state = rx.borrow().state.clone();
+        up_state.state = crate::control_plane::model::TunnelState::Up;
+        let _ = tx.send_replace(PublishedState {
+            seq: 1,
+            state: up_state,
+        });
+
+        assert!(rx.has_changed().unwrap());
+
+        let snapshot = rx.borrow_and_update().clone();
+        assert_eq!(snapshot.seq, 1);
+        assert!(!rx.has_changed().unwrap());
+    }
 }
