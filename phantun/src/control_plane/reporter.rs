@@ -99,7 +99,7 @@ impl ControlReporter {
         };
 
         let current = tx.borrow().clone();
-        let mut next_state = current.state;
+        let mut next_state = current.state.clone();
         mutator(&mut next_state);
 
         // Emit events only when state actually changes.
