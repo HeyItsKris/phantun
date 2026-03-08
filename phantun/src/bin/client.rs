@@ -23,6 +23,7 @@ use phantun::UDP_TTL;
 
 const STOPPING_ACK_TIMEOUT: Duration = Duration::from_millis(800);
 const DOWN_DELIVERY_TIMEOUT: Duration = Duration::from_millis(300);
+const TASK_DRAIN_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
@@ -401,7 +402,12 @@ async fn main() -> io::Result<()> {
             }
 
             task_group.cancel();
-            task_group.wait().await;
+            if !task_group.wait_timeout(TASK_DRAIN_TIMEOUT).await {
+                info!(
+                    "Task drain did not finish within {:?}, continuing shutdown",
+                    TASK_DRAIN_TIMEOUT
+                );
+            }
 
             if !control_reporter
                 .publish_down_and_wait_delivery(DOWN_DELIVERY_TIMEOUT)
@@ -427,7 +433,12 @@ async fn main() -> io::Result<()> {
             task_group.cancel();
             main_loop.abort();
             let _ = (&mut main_loop).await;
-            task_group.wait().await;
+            if !task_group.wait_timeout(TASK_DRAIN_TIMEOUT).await {
+                info!(
+                    "Task drain did not finish within {:?}, continuing shutdown",
+                    TASK_DRAIN_TIMEOUT
+                );
+            }
 
             if !control_reporter
                 .publish_down_and_wait_delivery(DOWN_DELIVERY_TIMEOUT)
