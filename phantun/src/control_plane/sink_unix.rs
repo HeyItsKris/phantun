@@ -66,6 +66,7 @@ pub async fn run_unix_sink(
                         &mut write_half,
                         &snapshot,
                         MessageType::Snapshot,
+                        target.label.as_str(),
                         &sync,
                         &mut message_seq,
                     )
@@ -93,6 +94,7 @@ pub async fn run_unix_sink(
                                     &mut write_half,
                                     &published,
                                     MessageType::Event,
+                                    target.label.as_str(),
                                     &sync,
                                     &mut message_seq,
                                 ).await {
@@ -107,7 +109,7 @@ pub async fn run_unix_sink(
                                 match inbound {
                                     Ok(Some(message)) => {
                                         if let Some(seq) = message.acked_seq() {
-                                            sync.acked.mark(seq).await;
+                                            sync.acked.mark(seq, target.label.as_str()).await;
                                         }
                                     }
                                     Ok(None) => {}
@@ -150,6 +152,7 @@ async fn send_published(
     write_half: &mut OwnedWriteHalf,
     published: &PublishedState,
     message_type: MessageType,
+    target_label: &str,
     sync: &ControlSyncState,
     message_seq: &mut u64,
 ) -> io::Result<()> {
@@ -162,7 +165,7 @@ async fn send_published(
     payload.push(b'\n');
 
     write_half.write_all(&payload).await?;
-    sync.delivered.mark(published.seq).await;
+    sync.delivered.mark(published.seq, target_label).await;
     Ok(())
 }
 

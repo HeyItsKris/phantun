@@ -16,7 +16,8 @@ pub fn start_control_plane(
     }
 
     let parsed_targets = parse_targets(targets)?;
-    let sync = ControlSyncState::default();
+    let target_labels: Vec<String> = parsed_targets.iter().map(|target| target.label.clone()).collect();
+    let sync = ControlSyncState::new(&target_labels);
     let (tx, rx) = watch::channel(PublishedState::new(initial_state));
 
     for target in parsed_targets {

@@ -3,6 +3,7 @@ use fake_tcp::packet::MAX_PACKET_LEN;
 use fake_tcp::Stack;
 use log::{debug, error, info};
 use phantun::control_plane::{ControlMode, ControlState, StopReason, start_control_plane};
+use phantun::task_group::TaskGroup;
 use phantun::utils::{
     assign_ipv6_address, new_udp_reuseport, read_interface_kernel_state, wait_for_termination_signal,
 };
@@ -205,13 +206,19 @@ async fn main() -> io::Result<()> {
     let mut stack = Stack::new(tun, tun_local, tun_local6);
     stack.listen(local_port);
     info!("Listening on {}", local_port);
+    let task_group = TaskGroup::new();
+    let main_loop_tasks = task_group.clone();
 
     let mut main_loop = tokio::spawn(async move {
         let mut buf_udp = [0u8; MAX_PACKET_LEN];
         let mut buf_tcp = [0u8; MAX_PACKET_LEN];
+        let shutdown = main_loop_tasks.token();
 
         loop {
-            let sock = Arc::new(stack.accept().await);
+            let sock = tokio::select! {
+                _ = shutdown.cancelled() => break,
+                sock = stack.accept() => Arc::new(sock),
+            };
             info!("New connection: {}", sock);
             if let Some(ref p) = handshake_packet {
                 if sock.send(p).await.is_none() {
@@ -238,8 +245,9 @@ async fn main() -> io::Result<()> {
                 let quit = quit.clone();
                 let packet_received = packet_received.clone();
                 let udp_sock = new_udp_reuseport(local_addr);
+                let shutdown = shutdown.clone();
 
-                tokio::spawn(async move {
+                main_loop_tasks.spawn(async move {
                     udp_sock.connect(remote_addr).await.unwrap();
 
                     loop {
@@ -274,12 +282,17 @@ async fn main() -> io::Result<()> {
                                 debug!("worker {} terminated", i);
                                 return;
                             },
+                            _ = shutdown.cancelled() => {
+                                quit.cancel();
+                                return;
+                            },
                         };
                     }
                 });
             }
 
-            tokio::spawn(async move {
+            let shutdown = shutdown.clone();
+            main_loop_tasks.spawn(async move {
                 loop {
                     let read_timeout = time::sleep(UDP_TTL);
                     let packet_received_fut = packet_received.notified();
@@ -291,11 +304,18 @@ async fn main() -> io::Result<()> {
                             quit.cancel();
                             return;
                         },
+                        _ = quit.cancelled() => return,
+                        _ = shutdown.cancelled() => {
+                            quit.cancel();
+                            return;
+                        },
                         _ = packet_received_fut => {},
                     }
                 }
             });
         }
+
+        Ok(())
     });
 
     tokio::select! {
@@ -316,6 +336,10 @@ async fn main() -> io::Result<()> {
             {
                 info!("No stopping ACK received within {:?}", STOPPING_ACK_TIMEOUT);
             }
+
+            task_group.cancel();
+            task_group.wait().await;
+
             if !control_reporter
                 .publish_down_and_wait_delivery(DOWN_DELIVERY_TIMEOUT)
                 .await
@@ -337,8 +361,10 @@ async fn main() -> io::Result<()> {
                 info!("No stopping ACK received within {:?}", STOPPING_ACK_TIMEOUT);
             }
 
+            task_group.cancel();
             main_loop.abort();
             let _ = (&mut main_loop).await;
+            task_group.wait().await;
 
             if !control_reporter
                 .publish_down_and_wait_delivery(DOWN_DELIVERY_TIMEOUT)

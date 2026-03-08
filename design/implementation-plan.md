@@ -49,7 +49,7 @@
 
 1. 每个 target 每次重连成功后先发 `snapshot`（全量当前状态）。
 2. 后续状态变化发 `event`（增量语义，但 payload 仍为完整状态快照，便于消费端无状态处理）。
-3. `stopping` 需要 consumer ACK（`{"type":"ack","id":"mN"}`），`down` 不需要 ACK。
+3. `stopping` 需要 consumer ACK（`{"type":"ack","id":"m<state_seq>-<message_seq>"}`），`down` 不需要 ACK。
 4. 连接中断期间不补历史事件；重连后的 `snapshot` 负责状态收敛。
 
 ## 4. push fan-out 运行机制

@@ -42,7 +42,7 @@ Every line is a JSON object:
   "v": 1,
   "type": "snapshot",
   "ts": 1710000000000,
-  "id": "m42",
+  "id": "m42-7",
   "data": {
     "state": "up",
     "reason": null,
@@ -92,7 +92,7 @@ Fields:
 `stopping` requires consumer-side ACK:
 
 ```json
-{"type":"ack","id":"m42"}
+{"type":"ack","id":"m42-7"}
 ```
 
 Rules:
