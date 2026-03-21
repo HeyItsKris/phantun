@@ -1,6 +1,6 @@
 # control-plane-mock-consumer
 
-Minimal mock consumer for Phantun control-plane testing.
+Minimal mock agent for Phantun `v2` control-plane testing.
 
 ## Run
 
@@ -13,7 +13,8 @@ go run ./tools/control-plane-mock-consumer \
 
 1. Listens on UNIX socket (server side).
 2. Prints each incoming NDJSON line.
-3. Sends `{"type":"ack","id":"..."}` when `data.state=="stopping"` (default).
+3. Replies with a `v2` `response` message for each incoming `request`.
+4. Keeps the connection open unless configured to drop on a phase.
 
 ## Options
 
@@ -22,7 +23,7 @@ go run ./tools/control-plane-mock-consumer --help
 ```
 
 - `--socket`: UNIX socket listen path.
-- `--ack-state`: Which state triggers ACK (default `stopping`).
-- `--ack-type`: Optional message type filter for ACK (for example: `event`).
-- `--ack-delay`: Delay ACK send (for timeout/path testing), for example: `200ms`.
-- `--no-ack`: Disable ACK replies.
+- `--reply-delay`: Delay response send, for timeout/path testing.
+- `--fail-phase`: Return `success=false` for the given phase. Repeatable.
+- `--drop-phase`: Close the connection without a response for the given phase. Repeatable.
+- `--failure-message`: Message used in failed responses.

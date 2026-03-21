@@ -1,8 +1,9 @@
-use clap::{crate_version, Arg, ArgAction, Command};
+use clap::{Arg, ArgAction, Command, crate_version};
 use fake_tcp::packet::MAX_PACKET_LEN;
 use fake_tcp::{Socket, Stack};
 use log::{debug, error, info};
 use phantun::control_plane::{ControlMode, ControlState, StopReason, start_control_plane};
+use phantun::shutdown::run_controlled_shutdown;
 use phantun::task_group::TaskGroup;
 use phantun::utils::{
     assign_ipv6_address, new_udp_reuseport, read_interface_kernel_state, udp_recv_pktinfo,
@@ -12,7 +13,6 @@ use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
-use std::time::Duration;
 use std::sync::Arc;
 use tokio::sync::{Notify, RwLock};
 use tokio::time;
@@ -21,9 +21,7 @@ use tokio_util::sync::CancellationToken;
 
 use phantun::UDP_TTL;
 
-const STOPPING_ACK_TIMEOUT: Duration = Duration::from_millis(800);
-const DOWN_DELIVERY_TIMEOUT: Duration = Duration::from_millis(300);
-const TASK_DRAIN_TIMEOUT: Duration = Duration::from_secs(3);
+const TASK_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
@@ -116,7 +114,7 @@ async fn main() -> io::Result<()> {
                 .long("control-target")
                 .required(false)
                 .value_name("UNIX_PATH")
-                .help("Push control-plane status to this UNIX socket path. Repeat this option to configure multiple targets")
+                .help("Synchronize lifecycle with this UNIX socket agent. Repeat this option to require multiple agents")
                 .action(ArgAction::Append)
                 .num_args(1)
         )
@@ -176,8 +174,7 @@ async fn main() -> io::Result<()> {
         Some(local_addr.to_string()),
         Some(remote_addr.to_string()),
     );
-    let control_reporter = start_control_plane(&control_targets, control_state)?;
-    control_reporter.publish_starting();
+    let control_plane = start_control_plane(&control_targets, control_state).await?;
 
     let num_cpus = num_cpus::get();
     info!("{} cores available", num_cpus);
@@ -198,15 +195,18 @@ async fn main() -> io::Result<()> {
     let tun_device = tun[0].name().to_string();
     let kernel_state = read_interface_kernel_state(&tun_device);
     info!("Created TUN device {}", tun_device);
-    control_reporter.publish_up(
-        Some(tun_device),
-        kernel_state.mtu,
-        kernel_state.addr4,
-        kernel_state.addr6,
-    );
+    control_plane
+        .post_start(
+            Some(tun_device),
+            kernel_state.mtu,
+            kernel_state.addr4,
+            kernel_state.addr6,
+        )
+        .await?;
 
     let udp_sock = Arc::new(new_udp_reuseport(local_addr));
     let connections = Arc::new(RwLock::new(HashMap::<SocketAddr, Arc<Socket>>::new()));
+    let control_shutdown = control_plane.shutdown_token();
 
     let mut stack = Stack::new(tun, tun_peer, tun_peer6);
     let task_group = TaskGroup::new();
@@ -252,11 +252,13 @@ async fn main() -> io::Result<()> {
                 continue;
             }
 
-            assert!(connections
-                .write()
-                .await
-                .insert(udp_remote_addr, sock.clone())
-                .is_none());
+            assert!(
+                connections
+                    .write()
+                    .await
+                    .insert(udp_remote_addr, sock.clone())
+                    .is_none()
+            );
             debug!("inserted fake TCP socket into connection table");
 
             // spawn "fastpath" UDP socket and task, this will offload main task
@@ -394,61 +396,40 @@ async fn main() -> io::Result<()> {
                 StopReason::MainLoopError
             };
 
-            if !control_reporter
-                .publish_stopping_and_wait_ack(stop_reason, STOPPING_ACK_TIMEOUT)
-                .await
-            {
-                info!("No stopping ACK received within {:?}", STOPPING_ACK_TIMEOUT);
-            }
-
-            task_group.cancel();
-            if !task_group.wait_timeout(TASK_DRAIN_TIMEOUT).await {
-                info!(
-                    "Task drain did not finish within {:?}, continuing shutdown",
-                    TASK_DRAIN_TIMEOUT
-                );
-            }
-
-            if !control_reporter
-                .publish_down_and_wait_delivery(DOWN_DELIVERY_TIMEOUT)
-                .await
-            {
-                info!(
-                    "Down event delivery was not observed within {:?}",
-                    DOWN_DELIVERY_TIMEOUT
-                );
-            }
+            run_controlled_shutdown(
+                &mut main_loop,
+                false,
+                &task_group,
+                &control_plane,
+                stop_reason,
+                TASK_DRAIN_TIMEOUT,
+            ).await;
 
             exit_result
         }
         signal_name = wait_for_termination_signal() => {
             info!("Received {}, initiating shutdown handshake", signal_name);
-            if !control_reporter
-                .publish_stopping_and_wait_ack(StopReason::Signal, STOPPING_ACK_TIMEOUT)
-                .await
-            {
-                info!("No stopping ACK received within {:?}", STOPPING_ACK_TIMEOUT);
-            }
+            run_controlled_shutdown(
+                &mut main_loop,
+                true,
+                &task_group,
+                &control_plane,
+                StopReason::Signal,
+                TASK_DRAIN_TIMEOUT,
+            ).await;
 
-            task_group.cancel();
-            main_loop.abort();
-            let _ = (&mut main_loop).await;
-            if !task_group.wait_timeout(TASK_DRAIN_TIMEOUT).await {
-                info!(
-                    "Task drain did not finish within {:?}, continuing shutdown",
-                    TASK_DRAIN_TIMEOUT
-                );
-            }
-
-            if !control_reporter
-                .publish_down_and_wait_delivery(DOWN_DELIVERY_TIMEOUT)
-                .await
-            {
-                info!(
-                    "Down event delivery was not observed within {:?}",
-                    DOWN_DELIVERY_TIMEOUT
-                );
-            }
+            Ok(())
+        }
+        _ = control_shutdown.cancelled() => {
+            info!("control-plane quorum lost, initiating shutdown");
+            run_controlled_shutdown(
+                &mut main_loop,
+                true,
+                &task_group,
+                &control_plane,
+                StopReason::AgentDisconnect,
+                TASK_DRAIN_TIMEOUT,
+            ).await;
 
             Ok(())
         }

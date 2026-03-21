@@ -1,9 +1,7 @@
+mod agent;
 mod model;
-mod reporter;
+mod protocol;
 mod runtime;
-mod sink_unix;
-mod sync_state;
 
-pub use model::{ControlMode, ControlState, StopReason};
-pub use reporter::ControlReporter;
-pub use runtime::start_control_plane;
+pub use model::{ControlMode, ControlState, ControlStatePhase, StopReason};
+pub use runtime::{ControlPlane, start_control_plane};

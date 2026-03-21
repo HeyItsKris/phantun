@@ -258,8 +258,8 @@ RUST_LOG=info /usr/local/bin/phantun_client --local 127.0.0.1:1234 --remote exam
 
 ## 5. Control plane (Optional)
 
-Phantun can push control-plane state updates (`starting` / `up` / `stopping` / `down`) to one or more UNIX
-domain socket targets. Use repeatable `--control-target`:
+Phantun can synchronize its lifecycle with one or more local UNIX domain socket agents. Use
+repeatable `--control-target`:
 
 ```
 RUST_LOG=info /usr/local/bin/phantun_client --local 127.0.0.1:1234 --remote 10.0.0.1:4567 \
@@ -267,6 +267,7 @@ RUST_LOG=info /usr/local/bin/phantun_client --local 127.0.0.1:1234 --remote 10.0
   --control-target /run/phantun/agent-b.sock
 ```
 
+If one or more targets are configured, all of them become required lifecycle participants.
 Protocol and message schema are documented in [design/control-plane-protocol.md](design/control-plane-protocol.md).
 
 [Back to TOC](#table-of-contents)

@@ -1,5 +1,4 @@
-use serde::{Deserialize, Serialize};
-use std::time::{SystemTime, UNIX_EPOCH};
+use serde::Serialize;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -9,12 +8,16 @@ pub enum ControlMode {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum TunnelState {
+#[serde(rename_all = "snake_case")]
+pub enum ControlStatePhase {
+    PreStart,
     Starting,
-    Up,
+    PostStart,
+    Running,
+    PreStop,
     Stopping,
-    Down,
+    PostStop,
+    Stopped,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -23,11 +26,12 @@ pub enum StopReason {
     ProcessExit,
     MainLoopError,
     Signal,
+    AgentDisconnect,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ControlState {
-    pub state: TunnelState,
+    pub state: ControlStatePhase,
     pub reason: Option<StopReason>,
     pub mode: ControlMode,
     pub local: Option<String>,
@@ -41,7 +45,7 @@ pub struct ControlState {
 impl ControlState {
     pub fn new(mode: ControlMode, local: Option<String>, remote: Option<String>) -> Self {
         Self {
-            state: TunnelState::Starting,
+            state: ControlStatePhase::PreStart,
             reason: None,
             mode,
             local,
@@ -52,127 +56,48 @@ impl ControlState {
             addr6: None,
         }
     }
-}
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PublishedState {
-    pub seq: u64,
-    pub state: ControlState,
-}
-
-impl PublishedState {
-    pub fn new(state: ControlState) -> Self {
-        Self { seq: 0, state }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum MessageType {
-    Snapshot,
-    Event,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct ControlMessage {
-    pub v: u8,
-    #[serde(rename = "type")]
-    pub message_type: MessageType,
-    pub ts: u64,
-    pub id: String,
-    pub data: ControlState,
-}
-
-impl ControlMessage {
-    pub fn from_published(message_type: MessageType, id: String, published: &PublishedState) -> Self {
-        Self {
-            v: 1,
-            message_type,
-            ts: unix_timestamp_millis(),
-            id,
-            data: published.state.clone(),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum InboundMessageType {
-    Ack,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-pub struct InboundMessage {
-    #[serde(rename = "type")]
-    pub message_type: InboundMessageType,
-    pub id: String,
-}
-
-impl InboundMessage {
-    pub fn acked_seq(&self) -> Option<u64> {
-        if self.message_type != InboundMessageType::Ack {
-            return None;
-        }
-
-        message_id_to_seq(&self.id)
-    }
-}
-
-pub fn build_message_id(state_seq: u64, message_seq: u64) -> String {
-    format!("m{state_seq}-{message_seq}")
-}
-
-pub fn message_id_to_seq(message_id: &str) -> Option<u64> {
-    let suffix = message_id.strip_prefix('m')?;
-    let (state_seq, _) = suffix.split_once('-')?;
-    state_seq.parse().ok()
-}
-
-fn unix_timestamp_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{
-        ControlMessage, ControlMode, ControlState, InboundMessage, MessageType, PublishedState,
-        StopReason, TunnelState, build_message_id, message_id_to_seq,
-    };
-
-    #[test]
-    fn serialize_stopping_event() {
-        let mut state = ControlState::new(
-            ControlMode::Client,
-            Some("127.0.0.1:1234".to_string()),
-            Some("1.2.3.4:4567".to_string()),
-        );
-        state.state = TunnelState::Stopping;
-        state.reason = Some(StopReason::Signal);
-        state.dev = Some("tun0".to_string());
-
-        let msg = ControlMessage::from_published(
-            MessageType::Event,
-            build_message_id(42, 7),
-            &PublishedState { seq: 42, state },
-        );
-        let json = serde_json::to_string(&msg).unwrap();
-
-        assert!(json.contains("\"type\":\"event\""));
-        assert!(json.contains("\"id\":\"m42-7\""));
-        assert!(json.contains("\"state\":\"stopping\""));
-        assert!(json.contains("\"reason\":\"signal\""));
+    pub fn mark_starting(&mut self) {
+        self.state = ControlStatePhase::Starting;
+        self.reason = None;
     }
 
-    #[test]
-    fn parse_ack_message_id() {
-        let inbound: InboundMessage =
-            serde_json::from_str(r#"{"type":"ack","id":"m15-99"}"#).unwrap();
-        assert_eq!(inbound.acked_seq(), Some(15));
-        assert_eq!(build_message_id(27, 3), "m27-3");
-        assert_eq!(message_id_to_seq("m27-3"), Some(27));
-        assert_eq!(message_id_to_seq("bad"), None);
+    pub fn mark_post_start(
+        &mut self,
+        dev: Option<String>,
+        mtu: Option<u32>,
+        addr4: Option<String>,
+        addr6: Option<String>,
+    ) {
+        self.state = ControlStatePhase::PostStart;
+        self.reason = None;
+        self.dev = dev;
+        self.mtu = mtu;
+        self.addr4 = addr4;
+        self.addr6 = addr6;
+    }
+
+    pub fn mark_running(&mut self) {
+        self.state = ControlStatePhase::Running;
+        self.reason = None;
+    }
+
+    pub fn mark_pre_stop(&mut self, reason: StopReason) {
+        self.state = ControlStatePhase::PreStop;
+        self.reason = Some(reason);
+    }
+
+    pub fn mark_stopping(&mut self, reason: StopReason) {
+        self.state = ControlStatePhase::Stopping;
+        self.reason = Some(reason);
+    }
+
+    pub fn mark_post_stop(&mut self, reason: StopReason) {
+        self.state = ControlStatePhase::PostStop;
+        self.reason = Some(reason);
+    }
+
+    pub fn mark_stopped(&mut self) {
+        self.state = ControlStatePhase::Stopped;
     }
 }
