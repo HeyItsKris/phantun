@@ -1,13 +1,13 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ControlMode {
     Client,
     Server,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ControlStatePhase {
     PreStart,
@@ -20,7 +20,7 @@ pub enum ControlStatePhase {
     Stopped,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StopReason {
     ProcessExit,
@@ -29,7 +29,7 @@ pub enum StopReason {
     AgentDisconnect,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ControlState {
     pub state: ControlStatePhase,
     pub reason: Option<StopReason>,

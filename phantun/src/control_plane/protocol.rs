@@ -85,6 +85,20 @@ mod tests {
     }
 
     #[test]
+    fn deserialize_request() {
+        let request: ControlRequest = serde_json::from_str(
+            r#"{"v":2,"kind":"request","session_id":"boot-a","id":3,"phase":"pre_start","deadline_ms":3000,"payload":{"state":"pre_start","reason":null,"mode":"client","local":"127.0.0.1:1","remote":null,"dev":null,"mtu":null,"addr4":null,"addr6":null}}"#,
+        )
+        .unwrap();
+
+        assert_eq!(request.kind, MessageKind::Request);
+        assert_eq!(request.phase, RequestPhase::PreStart);
+        assert_eq!(request.id, 3);
+        assert_eq!(request.payload.mode, ControlMode::Client);
+        assert_eq!(request.payload.state, crate::control_plane::ControlStatePhase::PreStart);
+    }
+
+    #[test]
     fn deserialize_response() {
         let response: ControlResponse = serde_json::from_str(
             r#"{"v":2,"kind":"response","session_id":"boot-a","id":7,"success":true,"message":null}"#,
