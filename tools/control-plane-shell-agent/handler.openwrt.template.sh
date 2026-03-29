@@ -3,8 +3,8 @@ set -eu
 
 # OpenWrt template for firewall4 (nftables-based, typical on OpenWrt 22+).
 # This follows Phantun's documented NAT model:
-# - client: srcnat/masquerade tunnel traffic on WAN
-# - server: dstnat the listening TCP port to the tunnel address
+# - client: srcnat/masquerade tunnel peer traffic on WAN
+# - server: dstnat the listening TCP port to the tunnel peer address
 # Rules are written as a dedicated fw4 include file and then reloaded.
 # If you are on legacy firewall3/iptables OpenWrt, use the iptables template.
 
@@ -98,8 +98,8 @@ render_client_ruleset() {
   iface6="$(default_iface_v6)"
   addr4=""
   addr6=""
-  [ -n "${PEER4:-$ADDR4}" ] && addr4="$(cidr_addr "${PEER4:-$ADDR4}")"
-  [ -n "${PEER6:-$ADDR6}" ] && addr6="$(cidr_addr "${PEER6:-$ADDR6}")"
+  [ -n "$PEER4" ] && addr4="$(cidr_addr "$PEER4")"
+  [ -n "$PEER6" ] && addr6="$(cidr_addr "$PEER6")"
 
   cat <<EOF
 table inet ${TABLE_NAME} {
@@ -136,8 +136,8 @@ render_server_ruleset() {
   port="$(parse_port "$LOCAL")"
   [ -n "$port" ] || fail "server mode requires a local listen port"
 
-  [ -n "${PEER4:-$ADDR4}" ] && addr4="$(cidr_addr "${PEER4:-$ADDR4}")"
-  [ -n "${PEER6:-$ADDR6}" ] && addr6="$(cidr_addr "${PEER6:-$ADDR6}")"
+  [ -n "$PEER4" ] && addr4="$(cidr_addr "$PEER4")"
+  [ -n "$PEER6" ] && addr6="$(cidr_addr "$PEER6")"
 
   cat <<EOF
 table inet ${TABLE_NAME} {

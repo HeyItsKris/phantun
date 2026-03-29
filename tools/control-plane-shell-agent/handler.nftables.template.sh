@@ -3,8 +3,8 @@ set -eu
 
 # Linux nftables template.
 # This follows Phantun's documented NAT model:
-# - client: srcnat/masquerade the tunnel address on the uplink
-# - server: dstnat the listening TCP port to the tunnel address
+# - client: srcnat/masquerade the tunnel peer address on the uplink
+# - server: dstnat the listening TCP port to the tunnel peer address
 # A forward chain is added as supporting policy for tunnel traffic.
 
 : "${PHANTUN_PROTOCOL_VERSION:?missing PHANTUN_PROTOCOL_VERSION}"
@@ -100,8 +100,8 @@ render_client_ruleset() {
   iface6="$(default_iface_v6)"
   addr4=""
   addr6=""
-  [ -n "${PEER4:-$ADDR4}" ] && addr4="$(cidr_addr "${PEER4:-$ADDR4}")"
-  [ -n "${PEER6:-$ADDR6}" ] && addr6="$(cidr_addr "${PEER6:-$ADDR6}")"
+  [ -n "$PEER4" ] && addr4="$(cidr_addr "$PEER4")"
+  [ -n "$PEER6" ] && addr6="$(cidr_addr "$PEER6")"
 
   cat <<EOF
 table inet ${TABLE_NAME} {
@@ -141,8 +141,8 @@ render_server_ruleset() {
   port="$(parse_port "$LOCAL")"
   [ -n "$port" ] || fail "server mode requires a local listen port"
 
-  [ -n "${PEER4:-$ADDR4}" ] && addr4="$(cidr_addr "${PEER4:-$ADDR4}")"
-  [ -n "${PEER6:-$ADDR6}" ] && addr6="$(cidr_addr "${PEER6:-$ADDR6}")"
+  [ -n "$PEER4" ] && addr4="$(cidr_addr "$PEER4")"
+  [ -n "$PEER6" ] && addr6="$(cidr_addr "$PEER6")"
 
   cat <<EOF
 table inet ${TABLE_NAME} {

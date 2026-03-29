@@ -3,8 +3,8 @@ set -eu
 
 # Linux iptables/ip6tables template.
 # This follows Phantun's documented NAT model:
-# - client: SNAT/MASQUERADE traffic from the tunnel to the physical uplink
-# - server: DNAT the listening TCP port to the tunnel address
+# - client: SNAT/MASQUERADE traffic from the tunnel peer address to the physical uplink
+# - server: DNAT the listening TCP port to the tunnel peer address
 # FORWARD accept rules are added as supporting rules, not the main feature.
 
 : "${PHANTUN_PROTOCOL_VERSION:?missing PHANTUN_PROTOCOL_VERSION}"
@@ -121,58 +121,53 @@ remove_forward_rules() {
 }
 
 apply_client_ipv4() {
-  nat_addr="${PEER4:-$ADDR4}"
-  [ -n "$nat_addr" ] || return 0
+  [ -n "$PEER4" ] || return 0
 
   iface="$(default_iface_v4)"
   [ -n "$iface" ] || fail "client IPv4 requires a default uplink interface"
 
-  tun_addr="$(cidr_addr "$nat_addr")"
+  tun_addr="$(cidr_addr "$PEER4")"
   ensure_forward_rules "$IPT"
   ipt_ensure_rule "$IPT" nat POSTROUTING -s "$tun_addr" -o "$iface" -j MASQUERADE
 }
 
 remove_client_ipv4() {
-  nat_addr="${PEER4:-$ADDR4}"
-  [ -n "$nat_addr" ] || return 0
+  [ -n "$PEER4" ] || return 0
 
   iface="$(default_iface_v4)"
   [ -n "$iface" ] || return 0
 
-  tun_addr="$(cidr_addr "$nat_addr")"
+  tun_addr="$(cidr_addr "$PEER4")"
   ipt_delete_rule "$IPT" nat POSTROUTING -s "$tun_addr" -o "$iface" -j MASQUERADE
   remove_forward_rules "$IPT"
 }
 
 apply_client_ipv6() {
-  nat_addr="${PEER6:-$ADDR6}"
-  [ -n "$nat_addr" ] || return 0
+  [ -n "$PEER6" ] || return 0
   tool_exists "$IP6T" || return 0
 
   iface="$(default_iface_v6)"
   [ -n "$iface" ] || fail "client IPv6 requires a default uplink interface"
 
-  tun_addr="$(cidr_addr "$nat_addr")"
+  tun_addr="$(cidr_addr "$PEER6")"
   ensure_forward_rules "$IP6T"
   ipt_ensure_rule "$IP6T" nat POSTROUTING -s "$tun_addr" -o "$iface" -j MASQUERADE
 }
 
 remove_client_ipv6() {
-  nat_addr="${PEER6:-$ADDR6}"
-  [ -n "$nat_addr" ] || return 0
+  [ -n "$PEER6" ] || return 0
   tool_exists "$IP6T" || return 0
 
   iface="$(default_iface_v6)"
   [ -n "$iface" ] || return 0
 
-  tun_addr="$(cidr_addr "$nat_addr")"
+  tun_addr="$(cidr_addr "$PEER6")"
   ipt_delete_rule "$IP6T" nat POSTROUTING -s "$tun_addr" -o "$iface" -j MASQUERADE
   remove_forward_rules "$IP6T"
 }
 
 apply_server_ipv4() {
-  nat_addr="${PEER4:-$ADDR4}"
-  [ -n "$nat_addr" ] || return 0
+  [ -n "$PEER4" ] || return 0
 
   iface="$(default_iface_v4)"
   [ -n "$iface" ] || fail "server IPv4 requires a default uplink interface"
@@ -180,14 +175,13 @@ apply_server_ipv4() {
   port="$(parse_port "$LOCAL")"
   [ -n "$port" ] || fail "server mode requires a local listen port"
 
-  tun_addr="$(cidr_addr "$nat_addr")"
+  tun_addr="$(cidr_addr "$PEER4")"
   ensure_forward_rules "$IPT"
   ipt_ensure_rule "$IPT" nat PREROUTING -p tcp -i "$iface" --dport "$port" -j DNAT --to-destination "$tun_addr"
 }
 
 remove_server_ipv4() {
-  nat_addr="${PEER4:-$ADDR4}"
-  [ -n "$nat_addr" ] || return 0
+  [ -n "$PEER4" ] || return 0
 
   iface="$(default_iface_v4)"
   [ -n "$iface" ] || return 0
@@ -195,14 +189,13 @@ remove_server_ipv4() {
   port="$(parse_port "$LOCAL")"
   [ -n "$port" ] || return 0
 
-  tun_addr="$(cidr_addr "$nat_addr")"
+  tun_addr="$(cidr_addr "$PEER4")"
   ipt_delete_rule "$IPT" nat PREROUTING -p tcp -i "$iface" --dport "$port" -j DNAT --to-destination "$tun_addr"
   remove_forward_rules "$IPT"
 }
 
 apply_server_ipv6() {
-  nat_addr="${PEER6:-$ADDR6}"
-  [ -n "$nat_addr" ] || return 0
+  [ -n "$PEER6" ] || return 0
   tool_exists "$IP6T" || return 0
 
   iface="$(default_iface_v6)"
@@ -211,14 +204,13 @@ apply_server_ipv6() {
   port="$(parse_port "$LOCAL")"
   [ -n "$port" ] || fail "server mode requires a local listen port"
 
-  tun_addr="$(cidr_addr "$nat_addr")"
+  tun_addr="$(cidr_addr "$PEER6")"
   ensure_forward_rules "$IP6T"
   ipt_ensure_rule "$IP6T" nat PREROUTING -p tcp -i "$iface" --dport "$port" -j DNAT --to-destination "$tun_addr"
 }
 
 remove_server_ipv6() {
-  nat_addr="${PEER6:-$ADDR6}"
-  [ -n "$nat_addr" ] || return 0
+  [ -n "$PEER6" ] || return 0
   tool_exists "$IP6T" || return 0
 
   iface="$(default_iface_v6)"
@@ -227,7 +219,7 @@ remove_server_ipv6() {
   port="$(parse_port "$LOCAL")"
   [ -n "$port" ] || return 0
 
-  tun_addr="$(cidr_addr "$nat_addr")"
+  tun_addr="$(cidr_addr "$PEER6")"
   ipt_delete_rule "$IP6T" nat PREROUTING -p tcp -i "$iface" --dport "$port" -j DNAT --to-destination "$tun_addr"
   remove_forward_rules "$IP6T"
 }

@@ -84,6 +84,14 @@ Field split:
 - `PHANTUN_ADDR4` / `PHANTUN_ADDR6`: kernel-reported local interface addresses
 - `PHANTUN_PEER4` / `PHANTUN_PEER6`: kernel-reported point-to-point peer/destination addresses
 
+The bundled NAT templates follow Phantun's official semantics and only use:
+
+- `PHANTUN_PEER4`
+- `PHANTUN_PEER6`
+
+`PHANTUN_ADDR4` / `PHANTUN_ADDR6` are still exported, but the templates keep
+them only for diagnostics instead of NAT rule generation.
+
 ## Script Contract
 
 The agent always runs the same script:

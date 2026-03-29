@@ -83,6 +83,13 @@ agent 会先清掉继承环境中的旧 `PHANTUN_*` 变量，然后再导出当�
 - `PHANTUN_ADDR4` / `PHANTUN_ADDR6`：内核实际看到的接口本地地址
 - `PHANTUN_PEER4` / `PHANTUN_PEER6`：内核实际看到的 point-to-point peer/destination 地址
 
+当前附带的 NAT 模板按 Phantun 官方语义只使用：
+
+- `PHANTUN_PEER4`
+- `PHANTUN_PEER6`
+
+`PHANTUN_ADDR4` / `PHANTUN_ADDR6` 仍然会导出，但模板里只保留作诊断信息，不参与 NAT 规则生成。
+
 ## 脚本约定
 
 agent 每次都执行同一个脚本：
