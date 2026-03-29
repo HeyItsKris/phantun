@@ -82,7 +82,9 @@ Every request is a JSON object:
     "dev": null,
     "mtu": null,
     "addr4": null,
-    "addr6": null
+    "addr6": null,
+    "peer4": null,
+    "peer6": null
   }
 }
 ```
@@ -145,8 +147,10 @@ Top-level response fields:
 - `remote`: remote endpoint when available
 - `dev`: TUN device name when available
 - `mtu`: TUN MTU when available
-- `addr4`: IPv4 CIDR when available
-- `addr6`: IPv6 CIDR when available
+- `addr4`: kernel-reported IPv4 CIDR on the TUN interface when available
+- `addr6`: kernel-reported IPv6 CIDR on the TUN interface when available
+- `peer4`: kernel-reported IPv4 point-to-point peer/destination CIDR when available
+- `peer6`: kernel-reported IPv6 point-to-point peer/destination CIDR when available
 
 ## 7. Lifecycle States
 
@@ -184,6 +188,8 @@ Optional:
 - `mtu`
 - `addr4`
 - `addr6`
+- `peer4`
+- `peer6`
 - `reason`
 
 Additional rules:
@@ -206,6 +212,8 @@ Conditionally required:
 
 - `addr4` if IPv4 is enabled
 - `addr6` if IPv6 is enabled
+- `peer4` if IPv4 point-to-point peer is enabled
+- `peer6` if IPv6 point-to-point peer is enabled
 
 Optional:
 

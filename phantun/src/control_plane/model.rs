@@ -40,6 +40,8 @@ pub struct ControlState {
     pub mtu: Option<u32>,
     pub addr4: Option<String>,
     pub addr6: Option<String>,
+    pub peer4: Option<String>,
+    pub peer6: Option<String>,
 }
 
 impl ControlState {
@@ -54,6 +56,8 @@ impl ControlState {
             mtu: None,
             addr4: None,
             addr6: None,
+            peer4: None,
+            peer6: None,
         }
     }
 
@@ -68,6 +72,8 @@ impl ControlState {
         mtu: Option<u32>,
         addr4: Option<String>,
         addr6: Option<String>,
+        peer4: Option<String>,
+        peer6: Option<String>,
     ) {
         self.state = ControlStatePhase::PostStart;
         self.reason = None;
@@ -75,6 +81,8 @@ impl ControlState {
         self.mtu = mtu;
         self.addr4 = addr4;
         self.addr6 = addr6;
+        self.peer4 = peer4;
+        self.peer6 = peer6;
     }
 
     pub fn mark_running(&mut self) {

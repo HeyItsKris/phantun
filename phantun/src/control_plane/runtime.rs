@@ -42,6 +42,8 @@ impl ControlPlane {
         mtu: Option<u32>,
         addr4: Option<String>,
         addr6: Option<String>,
+        peer4: Option<String>,
+        peer6: Option<String>,
     ) -> io::Result<()> {
         let Some(inner) = &self.inner else {
             return Ok(());
@@ -49,7 +51,7 @@ impl ControlPlane {
 
         {
             let mut state = inner.state.lock().await;
-            state.mark_post_start(dev, mtu, addr4, addr6);
+            state.mark_post_start(dev, mtu, addr4, addr6, peer4, peer6);
         }
 
         inner

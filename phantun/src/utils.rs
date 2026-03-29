@@ -28,6 +28,8 @@ pub struct InterfaceKernelState {
     pub mtu: Option<u32>,
     pub addr4: Option<String>,
     pub addr6: Option<String>,
+    pub peer4: Option<String>,
+    pub peer6: Option<String>,
 }
 
 pub fn new_udp_reuseport(local_addr: SocketAddr) -> UdpSocket {
@@ -180,7 +182,6 @@ pub fn read_interface_kernel_state(device_name: &str) -> InterfaceKernelState {
             {
                 let prefix = prefix_len_v4(ifaddr.netmask.as_ref());
                 state.addr4 = Some(format!("{}/{}", in4.ip(), prefix));
-                continue;
             }
 
             if let Some(addr) = &ifaddr.address
@@ -189,6 +190,22 @@ pub fn read_interface_kernel_state(device_name: &str) -> InterfaceKernelState {
             {
                 let prefix = prefix_len_v6(ifaddr.netmask.as_ref());
                 state.addr6 = Some(format!("{}/{}", in6.ip(), prefix));
+            }
+
+            if let Some(dst) = &ifaddr.destination
+                && let Some(in4) = dst.as_sockaddr_in()
+                && state.peer4.is_none()
+            {
+                let prefix = prefix_len_v4(ifaddr.netmask.as_ref());
+                state.peer4 = Some(format!("{}/{}", in4.ip(), prefix));
+            }
+
+            if let Some(dst) = &ifaddr.destination
+                && let Some(in6) = dst.as_sockaddr_in6()
+                && state.peer6.is_none()
+            {
+                let prefix = prefix_len_v6(ifaddr.netmask.as_ref());
+                state.peer6 = Some(format!("{}/{}", in6.ip(), prefix));
             }
         }
     }

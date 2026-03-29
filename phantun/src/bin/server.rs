@@ -200,6 +200,8 @@ async fn main() -> io::Result<()> {
             kernel_state.mtu,
             kernel_state.addr4,
             kernel_state.addr6,
+            kernel_state.peer4,
+            kernel_state.peer6,
         )
         .await?;
 
