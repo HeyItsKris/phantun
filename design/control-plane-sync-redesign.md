@@ -1,4 +1,21 @@
-# control-plane 同步重设计方案（草案）
+# control-plane 同步重设计方案（历史草案）
+
+## 状态说明
+
+这个文档保留为重设计讨论记录，**不是当前实现的规范文档**。
+
+当前代码已经落地为 `v2` 同步控制面，但和这份草案相比，有几处应以代码和正式协议文档为准：
+
+1. 规范文档是 [design/control-plane-protocol.md](control-plane-protocol.md)
+2. 当前 `payload` 已包含 `peer4` / `peer6`
+3. 实际停机路径是“有界等待后继续退出”，不是停机阶段失败就强制非零退出
+4. bundled shell agent 与模板以 [tools/control-plane-shell-agent/README.md](../tools/control-plane-shell-agent/README.md) 为准
+
+如果你是为了理解当前行为或实现细节，请优先看：
+
+1. [design/control-plane-protocol.md](control-plane-protocol.md)
+2. [README.md](../README.md)
+3. [tools/control-plane-shell-agent/README.md](../tools/control-plane-shell-agent/README.md)
 
 ## 1. 目标
 

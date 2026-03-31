@@ -78,6 +78,22 @@ agent 会先清掉继承环境中的旧 `PHANTUN_*` 变量，然后再导出当�
 
 其中可选字段只有在请求里存在时才会导出。
 
+这个仓库里附带的 agent 程序本身，只校验协议包络和最基本必填项：
+
+- `v`
+- `kind`
+- `session_id`
+- `phase`
+- `payload.state`
+- `payload.mode`
+
+按 phase 的细粒度字段校验，刻意下放给脚本自己处理。仓库里附带的防火墙模板已经会对这些字段做失败检查：
+
+- `PHANTUN_DEV`
+- `PHANTUN_PEER4`
+- `PHANTUN_PEER6`
+- server 模式下的 `PHANTUN_LOCAL`
+
 语义区分：
 
 - `PHANTUN_ADDR4` / `PHANTUN_ADDR6`：内核实际看到的接口本地地址
@@ -133,7 +149,8 @@ tools/control-plane-shell-agent/handler.openwrt.template.sh
 
 - `client`：对 TUN 地址做 `SNAT/MASQUERADE`
 - `server`：把监听的 TCP 端口 `DNAT` 到 TUN 地址
-- `FORWARD` 放行只是配套规则，不是核心逻辑
+- `pre_stop`：先摘掉 NAT 入口，阻止新流量继续进入
+- `post_stop`：再做剩余转发规则和辅助对象的最终清理
 
 它已经把环境变量收敛成普通 shell 变量，并按 phase 拆成了独立函数，
 同时提供了：
@@ -144,6 +161,26 @@ tools/control-plane-shell-agent/handler.openwrt.template.sh
 - `dump_context`：打印当前上下文，便于联调
 
 你后续基本只需要把各个 phase 里的 `TODO` 替换成真正的防火墙命令。
+
+这三份模板各自还有几点要注意：
+
+- `handler.iptables.template.sh`：
+  使用独立的自定义 chain 做规则归属，清理时不依赖“当前默认路由接口”，也不会误删宿主机里无关的同形规则。
+- `handler.nftables.template.sh`：
+  会把规则插进现有 nftables 规则集，并通过 comment tag 回收。
+  默认假设这些 chain 已存在：
+  - filter：`inet/filter/forward`
+  - nat：`inet/nat/prerouting` 和 `inet/nat/postrouting`
+  如果你的宿主机命名不同，可以通过下面这些环境变量覆盖：
+  - `NFT_FILTER_FAMILY`
+  - `NFT_FILTER_TABLE`
+  - `NFT_FORWARD_CHAIN`
+  - `NFT_NAT_FAMILY`
+  - `NFT_NAT_TABLE`
+  - `NFT_PREROUTING_CHAIN`
+  - `NFT_POSTROUTING_CHAIN`
+- `handler.openwrt.template.sh`：
+  会写入 `fw4` include 文件，并把规则追加到 `inet fw4 forward`、`inet fw4 srcnat`、`inet fw4 dstnat`。
 
 示例：
 

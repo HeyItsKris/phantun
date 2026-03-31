@@ -269,6 +269,8 @@ RUST_LOG=info /usr/local/bin/phantun_client --local 127.0.0.1:1234 --remote 10.0
 
 If one or more targets are configured, all of them become required lifecycle participants.
 Protocol and message schema are documented in [design/control-plane-protocol.md](design/control-plane-protocol.md).
+The bundled shell-based reference agent and templates live under
+[tools/control-plane-shell-agent](tools/control-plane-shell-agent).
 
 [Back to TOC](#table-of-contents)
 

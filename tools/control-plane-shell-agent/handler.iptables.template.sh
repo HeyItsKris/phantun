@@ -5,7 +5,8 @@ set -eu
 # This follows Phantun's documented NAT model:
 # - client: SNAT/MASQUERADE traffic from the tunnel peer address to the physical uplink
 # - server: DNAT the listening TCP port to the tunnel peer address
-# FORWARD accept rules are added as supporting rules, not the main feature.
+# - pre_stop: remove NAT entry rules so new flows stop entering
+# - post_stop: remove the remaining FORWARD rules and custom chains
 
 : "${PHANTUN_PROTOCOL_VERSION:?missing PHANTUN_PROTOCOL_VERSION}"
 : "${PHANTUN_KIND:?missing PHANTUN_KIND}"
@@ -52,6 +53,12 @@ tool_exists() {
   command -v "$1" >/dev/null 2>&1
 }
 
+sanitize_id() {
+  value=$(printf '%s' "$1" | tr '[:upper:]/:-.' '[:lower:]_____' | tr -cd 'a-z0-9_' | cut -c1-18)
+  [ -n "$value" ] || value="default"
+  printf '%s' "$value"
+}
+
 cidr_addr() {
   printf '%s' "$1" | awk -F/ '{print $1}'
 }
@@ -72,9 +79,14 @@ parse_port() {
   printf '%s' "${value##*:}"
 }
 
+RESOURCE_ID="$(sanitize_id "${MODE}_${DEV:-${SESSION_ID}}_${LOCAL:-na}")"
+FILTER_CHAIN="PHTF_${RESOURCE_ID}"
+NAT_CHAIN="PHTN_${RESOURCE_ID}"
+
 dump_context() {
   log "session_id=${SESSION_ID} request_id=${REQUEST_ID} phase=${PHASE} state=${STATE} mode=${MODE}"
   log "local=${LOCAL} remote=${REMOTE} dev=${DEV} mtu=${MTU} addr4=${ADDR4} addr6=${ADDR6} peer4=${PEER4} peer6=${PEER6} reason=${REASON}"
+  log "filter_chain=${FILTER_CHAIN} nat_chain=${NAT_CHAIN}"
 }
 
 ipt() {
@@ -82,6 +94,44 @@ ipt() {
   table="$2"
   shift 2
   "$tool" -w -t "$table" "$@"
+}
+
+ipt_chain_exists() {
+  tool="$1"
+  table="$2"
+  chain="$3"
+  ipt "$tool" "$table" -nL "$chain" >/dev/null 2>&1
+}
+
+ipt_ensure_chain() {
+  tool="$1"
+  table="$2"
+  chain="$3"
+
+  if ! ipt_chain_exists "$tool" "$table" "$chain"; then
+    run "$tool" -w -t "$table" -N "$chain"
+  fi
+}
+
+ipt_flush_chain() {
+  tool="$1"
+  table="$2"
+  chain="$3"
+
+  if ipt_chain_exists "$tool" "$table" "$chain"; then
+    run "$tool" -w -t "$table" -F "$chain"
+  fi
+}
+
+ipt_delete_chain() {
+  tool="$1"
+  table="$2"
+  chain="$3"
+
+  if ipt_chain_exists "$tool" "$table" "$chain"; then
+    ipt_flush_chain "$tool" "$table" "$chain"
+    run "$tool" -w -t "$table" -X "$chain"
+  fi
 }
 
 ipt_ensure_rule() {
@@ -106,18 +156,81 @@ ipt_delete_rule() {
   done
 }
 
-ensure_forward_rules() {
-  tool="$1"
-
-  ipt_ensure_rule "$tool" filter FORWARD -i "$DEV" -j ACCEPT
-  ipt_ensure_rule "$tool" filter FORWARD -o "$DEV" -j ACCEPT
+require_any_peer() {
+  if [ -z "$PEER4" ] && [ -z "$PEER6" ]; then
+    fail "requires PHANTUN_PEER4 or PHANTUN_PEER6"
+  fi
 }
 
-remove_forward_rules() {
+require_ipv6_tool() {
+  [ -n "$PEER6" ] || return 0
+  tool_exists "$IP6T" || fail "ip6tables not found: ${IP6T}"
+}
+
+reset_filter_chain() {
   tool="$1"
 
-  ipt_delete_rule "$tool" filter FORWARD -i "$DEV" -j ACCEPT
-  ipt_delete_rule "$tool" filter FORWARD -o "$DEV" -j ACCEPT
+  ipt_ensure_chain "$tool" filter "$FILTER_CHAIN"
+  ipt_flush_chain "$tool" filter "$FILTER_CHAIN"
+  ipt_ensure_rule "$tool" filter "$FILTER_CHAIN" -j ACCEPT
+}
+
+ensure_filter_jumps() {
+  tool="$1"
+
+  ipt_ensure_rule "$tool" filter FORWARD -i "$DEV" -j "$FILTER_CHAIN"
+  ipt_ensure_rule "$tool" filter FORWARD -o "$DEV" -j "$FILTER_CHAIN"
+}
+
+remove_filter_jumps() {
+  tool="$1"
+
+  ipt_delete_rule "$tool" filter FORWARD -i "$DEV" -j "$FILTER_CHAIN"
+  ipt_delete_rule "$tool" filter FORWARD -o "$DEV" -j "$FILTER_CHAIN"
+}
+
+cleanup_filter() {
+  tool="$1"
+
+  remove_filter_jumps "$tool"
+  ipt_delete_chain "$tool" filter "$FILTER_CHAIN"
+}
+
+reset_nat_chain() {
+  tool="$1"
+  shift
+
+  ipt_ensure_chain "$tool" nat "$NAT_CHAIN"
+  ipt_flush_chain "$tool" nat "$NAT_CHAIN"
+  ipt_ensure_rule "$tool" nat "$NAT_CHAIN" "$@"
+}
+
+ensure_client_nat_jump() {
+  tool="$1"
+  ipt_ensure_rule "$tool" nat POSTROUTING -j "$NAT_CHAIN"
+}
+
+ensure_server_nat_jump() {
+  tool="$1"
+  ipt_ensure_rule "$tool" nat PREROUTING -j "$NAT_CHAIN"
+}
+
+remove_client_nat_jump() {
+  tool="$1"
+  ipt_delete_rule "$tool" nat POSTROUTING -j "$NAT_CHAIN"
+}
+
+remove_server_nat_jump() {
+  tool="$1"
+  ipt_delete_rule "$tool" nat PREROUTING -j "$NAT_CHAIN"
+}
+
+cleanup_nat_chain() {
+  tool="$1"
+
+  remove_client_nat_jump "$tool"
+  remove_server_nat_jump "$tool"
+  ipt_delete_chain "$tool" nat "$NAT_CHAIN"
 }
 
 apply_client_ipv4() {
@@ -127,43 +240,24 @@ apply_client_ipv4() {
   [ -n "$iface" ] || fail "client IPv4 requires a default uplink interface"
 
   tun_addr="$(cidr_addr "$PEER4")"
-  ensure_forward_rules "$IPT"
-  ipt_ensure_rule "$IPT" nat POSTROUTING -s "$tun_addr" -o "$iface" -j MASQUERADE
-}
-
-remove_client_ipv4() {
-  [ -n "$PEER4" ] || return 0
-
-  iface="$(default_iface_v4)"
-  [ -n "$iface" ] || return 0
-
-  tun_addr="$(cidr_addr "$PEER4")"
-  ipt_delete_rule "$IPT" nat POSTROUTING -s "$tun_addr" -o "$iface" -j MASQUERADE
-  remove_forward_rules "$IPT"
+  reset_filter_chain "$IPT"
+  ensure_filter_jumps "$IPT"
+  reset_nat_chain "$IPT" -s "$tun_addr" -o "$iface" -j MASQUERADE
+  ensure_client_nat_jump "$IPT"
 }
 
 apply_client_ipv6() {
   [ -n "$PEER6" ] || return 0
-  tool_exists "$IP6T" || return 0
+  require_ipv6_tool
 
   iface="$(default_iface_v6)"
   [ -n "$iface" ] || fail "client IPv6 requires a default uplink interface"
 
   tun_addr="$(cidr_addr "$PEER6")"
-  ensure_forward_rules "$IP6T"
-  ipt_ensure_rule "$IP6T" nat POSTROUTING -s "$tun_addr" -o "$iface" -j MASQUERADE
-}
-
-remove_client_ipv6() {
-  [ -n "$PEER6" ] || return 0
-  tool_exists "$IP6T" || return 0
-
-  iface="$(default_iface_v6)"
-  [ -n "$iface" ] || return 0
-
-  tun_addr="$(cidr_addr "$PEER6")"
-  ipt_delete_rule "$IP6T" nat POSTROUTING -s "$tun_addr" -o "$iface" -j MASQUERADE
-  remove_forward_rules "$IP6T"
+  reset_filter_chain "$IP6T"
+  ensure_filter_jumps "$IP6T"
+  reset_nat_chain "$IP6T" -s "$tun_addr" -o "$iface" -j MASQUERADE
+  ensure_client_nat_jump "$IP6T"
 }
 
 apply_server_ipv4() {
@@ -176,27 +270,15 @@ apply_server_ipv4() {
   [ -n "$port" ] || fail "server mode requires a local listen port"
 
   tun_addr="$(cidr_addr "$PEER4")"
-  ensure_forward_rules "$IPT"
-  ipt_ensure_rule "$IPT" nat PREROUTING -p tcp -i "$iface" --dport "$port" -j DNAT --to-destination "$tun_addr"
-}
-
-remove_server_ipv4() {
-  [ -n "$PEER4" ] || return 0
-
-  iface="$(default_iface_v4)"
-  [ -n "$iface" ] || return 0
-
-  port="$(parse_port "$LOCAL")"
-  [ -n "$port" ] || return 0
-
-  tun_addr="$(cidr_addr "$PEER4")"
-  ipt_delete_rule "$IPT" nat PREROUTING -p tcp -i "$iface" --dport "$port" -j DNAT --to-destination "$tun_addr"
-  remove_forward_rules "$IPT"
+  reset_filter_chain "$IPT"
+  ensure_filter_jumps "$IPT"
+  reset_nat_chain "$IPT" -p tcp -i "$iface" --dport "$port" -j DNAT --to-destination "$tun_addr"
+  ensure_server_nat_jump "$IPT"
 }
 
 apply_server_ipv6() {
   [ -n "$PEER6" ] || return 0
-  tool_exists "$IP6T" || return 0
+  require_ipv6_tool
 
   iface="$(default_iface_v6)"
   [ -n "$iface" ] || fail "server IPv6 requires a default uplink interface"
@@ -205,41 +287,16 @@ apply_server_ipv6() {
   [ -n "$port" ] || fail "server mode requires a local listen port"
 
   tun_addr="$(cidr_addr "$PEER6")"
-  ensure_forward_rules "$IP6T"
-  ipt_ensure_rule "$IP6T" nat PREROUTING -p tcp -i "$iface" --dport "$port" -j DNAT --to-destination "$tun_addr"
+  reset_filter_chain "$IP6T"
+  ensure_filter_jumps "$IP6T"
+  reset_nat_chain "$IP6T" -p tcp -i "$iface" --dport "$port" -j DNAT --to-destination "$tun_addr"
+  ensure_server_nat_jump "$IP6T"
 }
 
-remove_server_ipv6() {
-  [ -n "$PEER6" ] || return 0
-  tool_exists "$IP6T" || return 0
-
-  iface="$(default_iface_v6)"
-  [ -n "$iface" ] || return 0
-
-  port="$(parse_port "$LOCAL")"
-  [ -n "$port" ] || return 0
-
-  tun_addr="$(cidr_addr "$PEER6")"
-  ipt_delete_rule "$IP6T" nat PREROUTING -p tcp -i "$iface" --dport "$port" -j DNAT --to-destination "$tun_addr"
-  remove_forward_rules "$IP6T"
-}
-
-pre_start() {
-  log "pre_start"
-  dump_context
-
-  tool_exists "$IPT" || fail "iptables not found: ${IPT}"
-
-  # TODO:
-  # Add any pre-flight checks here, such as verifying sysctl forwarding state.
-  :
-}
-
-post_start() {
-  log "post_start"
-  dump_context
-
+apply_rules() {
   [ -n "$DEV" ] || fail "post_start requires PHANTUN_DEV"
+  require_any_peer
+  require_ipv6_tool
 
   case "$MODE" in
     client)
@@ -256,16 +313,60 @@ post_start() {
   esac
 }
 
+quiesce_rules() {
+  case "$MODE" in
+    client|server)
+      cleanup_nat_chain "$IPT"
+      if [ -n "$PEER6" ]; then
+        cleanup_nat_chain "$IP6T"
+      fi
+      ;;
+    *)
+      fail "unsupported PHANTUN_MODE: ${MODE}"
+      ;;
+  esac
+}
+
+cleanup_rules() {
+  quiesce_rules
+  cleanup_filter "$IPT"
+  if [ -n "$PEER6" ]; then
+    cleanup_filter "$IP6T"
+  fi
+}
+
+pre_start() {
+  log "pre_start"
+  dump_context
+
+  tool_exists "$IPT" || fail "iptables not found: ${IPT}"
+  tool_exists ip || fail "ip not found"
+  require_ipv6_tool
+
+  # TODO:
+  # Add any pre-flight checks here, such as verifying sysctl forwarding state.
+  :
+}
+
+post_start() {
+  log "post_start"
+  dump_context
+  apply_rules
+}
+
 sync_state() {
   log "sync_state"
   dump_context
 
   case "$STATE" in
     post_start|running)
-      post_start
+      apply_rules
+      ;;
+    pre_stop|stopping)
+      quiesce_rules
       ;;
     post_stop|stopped)
-      post_stop
+      cleanup_rules
       ;;
     *)
       log "sync_state no-op for state=${STATE}"
@@ -276,29 +377,13 @@ sync_state() {
 pre_stop() {
   log "pre_stop"
   dump_context
-
-  # TODO:
-  # Add drain/quarantine logic here if needed.
-  :
+  quiesce_rules
 }
 
 post_stop() {
   log "post_stop"
   dump_context
-
-  case "$MODE" in
-    client)
-      remove_client_ipv4
-      remove_client_ipv6
-      ;;
-    server)
-      remove_server_ipv4
-      remove_server_ipv6
-      ;;
-    *)
-      fail "unsupported PHANTUN_MODE: ${MODE}"
-      ;;
-  esac
+  cleanup_rules
 }
 
 main() {

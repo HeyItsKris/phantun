@@ -1,4 +1,22 @@
-# control-plane 实施方案（草案 v2：push fan-out + 解耦）
+# control-plane 实施方案（历史草案，已过时）
+
+## 状态说明
+
+这个文档保留为历史设计记录，**不是当前实现的准确信息源**。
+
+当前实际实现已经不再使用这里描述的 `v1` 异步 `snapshot/event/ack` 方案，而是：
+
+1. `v2` 长连接 request/response 协议
+2. `--control-target` 对应的所有 agent 都是强依赖
+3. 运行期断连进入有界恢复，失败后触发受控停机
+4. `pre_stop` / `post_stop` 是同步 barrier，但停机阶段失败只记日志并继续收敛退出
+5. `payload` 已包含 `peer4` / `peer6`
+
+请改看这些当前文档：
+
+1. [design/control-plane-protocol.md](control-plane-protocol.md)
+2. [README.md](../README.md)
+3. [tools/control-plane-shell-agent/README.md](../tools/control-plane-shell-agent/README.md)
 
 ## 1. 范围与确认结论
 

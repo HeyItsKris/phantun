@@ -79,6 +79,24 @@ current request context:
 
 Optional fields are only exported when present in the request payload.
 
+The bundled agent itself validates only the protocol envelope and base required
+fields:
+
+- `v`
+- `kind`
+- `session_id`
+- `phase`
+- `payload.state`
+- `payload.mode`
+
+Phase-specific payload validation is intentionally delegated to the script. The
+bundled firewall templates already fail on missing fields such as:
+
+- `PHANTUN_DEV`
+- `PHANTUN_PEER4`
+- `PHANTUN_PEER6`
+- `PHANTUN_LOCAL` in server mode
+
 Field split:
 
 - `PHANTUN_ADDR4` / `PHANTUN_ADDR6`: kernel-reported local interface addresses
@@ -137,7 +155,8 @@ These three variants follow Phantun's official NAT semantics rather than a
 
 - `client`: `SNAT/MASQUERADE` the TUN address on the uplink
 - `server`: `DNAT` the listening TCP port to the TUN address
-- `FORWARD` accept rules are included only as supporting rules
+- `pre_stop`: remove NAT entry rules first so no new flows enter
+- `post_stop`: remove the remaining forwarding state and helper objects
 
 It already normalizes the request into shell variables and splits the lifecycle
 into phase-specific functions. It also includes:
@@ -149,6 +168,26 @@ into phase-specific functions. It also includes:
 
 In practice, you only need to replace the `TODO` blocks in each phase with your
 real firewall commands.
+
+Template-specific notes:
+
+- `handler.iptables.template.sh`: uses dedicated custom chains, so cleanup does
+  not depend on the current default route and does not delete unrelated host
+  rules.
+- `handler.nftables.template.sh`: adds rules into an existing nftables ruleset
+  and removes them by comment tag. By default it expects:
+  - filter chain: `inet/filter/forward`
+  - nat chains: `inet/nat/prerouting` and `inet/nat/postrouting`
+  You can override these with:
+  - `NFT_FILTER_FAMILY`
+  - `NFT_FILTER_TABLE`
+  - `NFT_FORWARD_CHAIN`
+  - `NFT_NAT_FAMILY`
+  - `NFT_NAT_TABLE`
+  - `NFT_PREROUTING_CHAIN`
+  - `NFT_POSTROUTING_CHAIN`
+- `handler.openwrt.template.sh`: writes an include file for `fw4` and appends
+  rules into `inet fw4 forward`, `inet fw4 srcnat`, and `inet fw4 dstnat`.
 
 Example:
 
@@ -207,6 +246,13 @@ On timeout:
 1. The agent kills the whole script process group
 2. The agent returns `success=false`
 3. The response message becomes `script timed out after ...`
+
+If the agent itself is shutting down and cancels the script context first, the
+response message becomes:
+
+```text
+script canceled by agent shutdown
+```
 
 ## Response Rules
 

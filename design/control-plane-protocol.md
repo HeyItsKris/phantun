@@ -250,6 +250,8 @@ Recommended:
 - `mtu`
 - `addr4`
 - `addr6`
+- `peer4`
+- `peer6`
 
 Additional rules:
 
@@ -278,6 +280,8 @@ Optional:
 - `mtu`
 - `addr4`
 - `addr6`
+- `peer4`
+- `peer6`
 - `reason`
 
 Additional rules:

@@ -5,8 +5,11 @@ set -eu
 # This follows Phantun's documented NAT model:
 # - client: srcnat/masquerade tunnel peer traffic on WAN
 # - server: dstnat the listening TCP port to the tunnel peer address
-# Rules are written as a dedicated fw4 include file and then reloaded.
-# If you are on legacy firewall3/iptables OpenWrt, use the iptables template.
+# - pre_stop: remove NAT entry rules so new flows stop entering
+# - post_stop: remove the remaining forward rules
+#
+# The generated include file appends rules to fw4's existing chains instead of
+# creating a parallel forward base chain.
 
 : "${PHANTUN_PROTOCOL_VERSION:?missing PHANTUN_PROTOCOL_VERSION}"
 : "${PHANTUN_KIND:?missing PHANTUN_KIND}"
@@ -54,7 +57,7 @@ tool_exists() {
 }
 
 sanitize_id() {
-  value=$(printf '%s' "$1" | tr '[:upper:]-.' '[:lower:]__' | tr -cd 'a-z0-9_' | cut -c1-24)
+  value=$(printf '%s' "$1" | tr '[:upper:]/:-.' '[:lower:]_____' | tr -cd 'a-z0-9_' | cut -c1-24)
   [ -n "$value" ] || value="default"
   printf '%s' "$value"
 }
@@ -79,13 +82,19 @@ parse_port() {
   printf '%s' "${value##*:}"
 }
 
-TABLE_NAME="phantun_$(sanitize_id "${DEV:-${SESSION_ID}}")"
-RULESET_FILE="${RULESET_DIR}/90-${TABLE_NAME}.nft"
+RULE_TAG="phantun_$(sanitize_id "${MODE}_${DEV:-${SESSION_ID}}_${LOCAL:-na}")"
+RULESET_FILE="${RULESET_DIR}/90-${RULE_TAG}.nft"
 
 dump_context() {
   log "session_id=${SESSION_ID} request_id=${REQUEST_ID} phase=${PHASE} state=${STATE} mode=${MODE}"
   log "local=${LOCAL} remote=${REMOTE} dev=${DEV} mtu=${MTU} addr4=${ADDR4} addr6=${ADDR6} peer4=${PEER4} peer6=${PEER6} reason=${REASON}"
-  log "include=${RULESET_FILE}"
+  log "rule_tag=${RULE_TAG} include=${RULESET_FILE}"
+}
+
+require_any_peer() {
+  if [ -z "$PEER4" ] && [ -z "$PEER6" ]; then
+    fail "requires PHANTUN_PEER4 or PHANTUN_PEER6"
+  fi
 }
 
 reload_firewall() {
@@ -93,96 +102,80 @@ reload_firewall() {
   run "$FW4" reload
 }
 
-render_client_ruleset() {
-  iface4="$(default_iface_v4)"
-  iface6="$(default_iface_v6)"
-  addr4=""
-  addr6=""
-  [ -n "$PEER4" ] && addr4="$(cidr_addr "$PEER4")"
-  [ -n "$PEER6" ] && addr6="$(cidr_addr "$PEER6")"
-
+render_forward_rules() {
   cat <<EOF
-table inet ${TABLE_NAME} {
-  chain forward {
-    type filter hook forward priority 0; policy accept;
-    iifname "${DEV}" accept
-    oifname "${DEV}" accept
-  }
-
-  chain postrouting {
-    type nat hook postrouting priority srcnat; policy accept;
-EOF
-  if [ -n "$addr4" ] && [ -n "$iface4" ]; then
-    cat <<EOF
-    ip saddr ${addr4} oifname "${iface4}" masquerade
-EOF
-  fi
-  if [ -n "$addr6" ] && [ -n "$iface6" ]; then
-    cat <<EOF
-    ip6 saddr ${addr6} oifname "${iface6}" masquerade
-EOF
-  fi
-  cat <<EOF
-  }
-}
+add rule inet fw4 forward iifname "${DEV}" counter accept comment "${RULE_TAG}"
+add rule inet fw4 forward oifname "${DEV}" counter accept comment "${RULE_TAG}"
 EOF
 }
 
-render_server_ruleset() {
-  iface4="$(default_iface_v4)"
-  iface6="$(default_iface_v6)"
-  addr4=""
-  addr6=""
+render_client_nat_rules() {
+  if [ -n "$PEER4" ]; then
+    iface4="$(default_iface_v4)"
+    [ -n "$iface4" ] || fail "client IPv4 requires a default uplink interface"
+    addr4="$(cidr_addr "$PEER4")"
+    cat <<EOF
+add rule inet fw4 srcnat ip saddr ${addr4} oifname "${iface4}" counter masquerade comment "${RULE_TAG}"
+EOF
+  fi
+
+  if [ -n "$PEER6" ]; then
+    iface6="$(default_iface_v6)"
+    [ -n "$iface6" ] || fail "client IPv6 requires a default uplink interface"
+    addr6="$(cidr_addr "$PEER6")"
+    cat <<EOF
+add rule inet fw4 srcnat ip6 saddr ${addr6} oifname "${iface6}" counter masquerade comment "${RULE_TAG}"
+EOF
+  fi
+}
+
+render_server_nat_rules() {
   port="$(parse_port "$LOCAL")"
   [ -n "$port" ] || fail "server mode requires a local listen port"
 
-  [ -n "$PEER4" ] && addr4="$(cidr_addr "$PEER4")"
-  [ -n "$PEER6" ] && addr6="$(cidr_addr "$PEER6")"
-
-  cat <<EOF
-table inet ${TABLE_NAME} {
-  chain forward {
-    type filter hook forward priority 0; policy accept;
-    iifname "${DEV}" accept
-    oifname "${DEV}" accept
-  }
-
-  chain prerouting {
-    type nat hook prerouting priority dstnat; policy accept;
-EOF
-  if [ -n "$addr4" ] && [ -n "$iface4" ]; then
+  if [ -n "$PEER4" ]; then
+    iface4="$(default_iface_v4)"
+    [ -n "$iface4" ] || fail "server IPv4 requires a default uplink interface"
+    addr4="$(cidr_addr "$PEER4")"
     cat <<EOF
-    iifname "${iface4}" tcp dport ${port} dnat ip to ${addr4}
+add rule inet fw4 dstnat iifname "${iface4}" tcp dport ${port} counter dnat ip to ${addr4} comment "${RULE_TAG}"
 EOF
   fi
-  if [ -n "$addr6" ] && [ -n "$iface6" ]; then
+
+  if [ -n "$PEER6" ]; then
+    iface6="$(default_iface_v6)"
+    [ -n "$iface6" ] || fail "server IPv6 requires a default uplink interface"
+    addr6="$(cidr_addr "$PEER6")"
     cat <<EOF
-    iifname "${iface6}" tcp dport ${port} dnat ip6 to ${addr6}
+add rule inet fw4 dstnat iifname "${iface6}" tcp dport ${port} counter dnat ip6 to ${addr6} comment "${RULE_TAG}"
 EOF
   fi
-  cat <<EOF
-  }
-}
-EOF
 }
 
 write_ruleset() {
-  [ -n "$DEV" ] || fail "post_start requires PHANTUN_DEV"
+  mode="$1"
 
+  [ -n "$DEV" ] || fail "post_start requires PHANTUN_DEV"
   mkdir -p "$RULESET_DIR"
+
   tmp_file="${RULESET_FILE}.tmp.$$"
-  case "$MODE" in
-    client)
-      render_client_ruleset >"$tmp_file"
-      ;;
-    server)
-      render_server_ruleset >"$tmp_file"
-      ;;
-    *)
-      rm -f "$tmp_file"
-      fail "unsupported PHANTUN_MODE: ${MODE}"
-      ;;
-  esac
+  {
+    render_forward_rules
+    if [ "$mode" = "full" ]; then
+      case "$MODE" in
+        client)
+          render_client_nat_rules
+          ;;
+        server)
+          render_server_nat_rules
+          ;;
+        *)
+          fail "unsupported PHANTUN_MODE: ${MODE}"
+          ;;
+      esac
+    fi
+  } >"$tmp_file"
+
   mv "$tmp_file" "$RULESET_FILE"
   reload_firewall
 }
@@ -194,11 +187,25 @@ remove_ruleset() {
   fi
 }
 
+apply_rules() {
+  require_any_peer
+  write_ruleset full
+}
+
+quiesce_rules() {
+  write_ruleset forward-only
+}
+
+cleanup_rules() {
+  remove_ruleset
+}
+
 pre_start() {
   log "pre_start"
   dump_context
 
   tool_exists "$FW4" || fail "fw4 not found: ${FW4}"
+  tool_exists ip || fail "ip not found"
 
   # TODO:
   # Add any pre-flight checks here, such as verifying sysctl forwarding state.
@@ -208,7 +215,7 @@ pre_start() {
 post_start() {
   log "post_start"
   dump_context
-  write_ruleset
+  apply_rules
 }
 
 sync_state() {
@@ -217,10 +224,13 @@ sync_state() {
 
   case "$STATE" in
     post_start|running)
-      write_ruleset
+      apply_rules
+      ;;
+    pre_stop|stopping)
+      quiesce_rules
       ;;
     post_stop|stopped)
-      post_stop
+      cleanup_rules
       ;;
     *)
       log "sync_state no-op for state=${STATE}"
@@ -231,16 +241,13 @@ sync_state() {
 pre_stop() {
   log "pre_stop"
   dump_context
-
-  # TODO:
-  # Add drain/quarantine logic here if needed.
-  :
+  quiesce_rules
 }
 
 post_stop() {
   log "post_stop"
   dump_context
-  remove_ruleset
+  cleanup_rules
 }
 
 main() {
