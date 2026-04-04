@@ -1,4 +1,5 @@
 use super::agent::{AgentHandle, UnixTarget, parse_unix_target, spawn_agent};
+use super::config::ControlPlaneTimeouts;
 use super::model::{ControlState, ControlStatePhase, StopReason};
 use super::protocol::{ControlRequest, RequestPhase};
 use log::{info, warn};
@@ -11,13 +12,6 @@ use tokio::sync::{Mutex, Notify};
 use tokio::task::JoinSet;
 use tokio::time::{Instant, timeout};
 use tokio_util::sync::CancellationToken;
-
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
-const PRE_START_TIMEOUT: Duration = Duration::from_secs(3);
-const POST_START_TIMEOUT: Duration = Duration::from_secs(3);
-const RECONNECT_GRACE_TIMEOUT: Duration = Duration::from_secs(3);
-const PRE_STOP_TIMEOUT: Duration = Duration::from_secs(2);
-const POST_STOP_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Debug)]
 pub struct ControlPlane {
@@ -55,7 +49,7 @@ impl ControlPlane {
         }
 
         inner
-            .broadcast_phase(RequestPhase::PostStart, POST_START_TIMEOUT)
+            .broadcast_phase(RequestPhase::PostStart, inner.timeouts.post_start_timeout)
             .await?;
         {
             let mut state = inner.state.lock().await;
@@ -77,7 +71,7 @@ impl ControlPlane {
         }
 
         let barrier_ok = inner
-            .broadcast_phase(RequestPhase::PreStop, PRE_STOP_TIMEOUT)
+            .broadcast_phase(RequestPhase::PreStop, inner.timeouts.pre_stop_timeout)
             .await
             .is_ok();
 
@@ -105,7 +99,7 @@ impl ControlPlane {
         }
 
         let barrier_ok = inner
-            .broadcast_phase(RequestPhase::PostStop, POST_STOP_TIMEOUT)
+            .broadcast_phase(RequestPhase::PostStop, inner.timeouts.post_stop_timeout)
             .await
             .is_ok();
 
@@ -121,6 +115,7 @@ impl ControlPlane {
 pub async fn start_control_plane(
     targets: &[String],
     initial_state: ControlState,
+    timeouts: ControlPlaneTimeouts,
 ) -> io::Result<ControlPlane> {
     if targets.is_empty() {
         return Ok(ControlPlane::disabled());
@@ -141,13 +136,14 @@ pub async fn start_control_plane(
         session_id: new_session_id(),
         next_request_id: AtomicU64::new(1),
         state: Mutex::new(initial_state),
+        timeouts,
         connectivity_notify,
         shutdown_token: CancellationToken::new(),
         recovery_in_progress: AtomicBool::new(false),
         shutting_down: AtomicBool::new(false),
     });
 
-    if !runtime.wait_for_all_connected(CONNECT_TIMEOUT).await {
+    if !runtime.wait_for_all_connected(runtime.timeouts.connect_timeout).await {
         return Err(io::Error::new(
             io::ErrorKind::TimedOut,
             "failed to connect all control agents",
@@ -155,7 +151,7 @@ pub async fn start_control_plane(
     }
 
     runtime
-        .broadcast_phase(RequestPhase::PreStart, PRE_START_TIMEOUT)
+        .broadcast_phase(RequestPhase::PreStart, runtime.timeouts.pre_start_timeout)
         .await?;
     {
         let mut state = runtime.state.lock().await;
@@ -175,6 +171,7 @@ struct ControlRuntime {
     session_id: String,
     next_request_id: AtomicU64,
     state: Mutex<ControlState>,
+    timeouts: ControlPlaneTimeouts,
     connectivity_notify: Arc<Notify>,
     shutdown_token: CancellationToken,
     recovery_in_progress: AtomicBool,
@@ -255,13 +252,19 @@ impl ControlRuntime {
             }
 
             warn!("control-plane quorum lost, entering bounded recovery");
-            if self.wait_for_all_connected(RECONNECT_GRACE_TIMEOUT).await {
+            if self
+                .wait_for_all_connected(self.timeouts.reconnect_grace_timeout)
+                .await
+            {
                 let recovery_result = match self
-                    .broadcast_phase(RequestPhase::SyncState, POST_START_TIMEOUT)
+                    .broadcast_phase(RequestPhase::SyncState, self.timeouts.sync_state_timeout)
                     .await
                 {
                     Ok(()) => {
-                        self.broadcast_phase(RequestPhase::PostStart, POST_START_TIMEOUT)
+                        self.broadcast_phase(
+                            RequestPhase::PostStart,
+                            self.timeouts.post_start_timeout,
+                        )
                             .await
                     }
                     Err(err) => Err(err),

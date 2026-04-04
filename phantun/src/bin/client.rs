@@ -2,7 +2,10 @@ use clap::{Arg, ArgAction, Command, crate_version};
 use fake_tcp::packet::MAX_PACKET_LEN;
 use fake_tcp::{Socket, Stack};
 use log::{debug, error, info};
-use phantun::control_plane::{ControlMode, ControlState, StopReason, start_control_plane};
+use phantun::control_plane::{
+    ControlMode, ControlPlaneTimeouts, ControlState, StopReason, parse_duration_arg,
+    start_control_plane,
+};
 use phantun::shutdown::run_controlled_shutdown;
 use phantun::task_group::TaskGroup;
 use phantun::utils::{
@@ -21,7 +24,7 @@ use tokio_util::sync::CancellationToken;
 
 use phantun::UDP_TTL;
 
-const TASK_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+const TASK_DRAIN_TIMEOUT_DEFAULT: &str = "3s";
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
@@ -118,6 +121,54 @@ async fn main() -> io::Result<()> {
                 .action(ArgAction::Append)
                 .num_args(1)
         )
+        .arg(control_duration_arg(
+            "control_connect_timeout",
+            "control-connect-timeout",
+            "Timeout for connecting all required control agents",
+            ControlPlaneTimeouts::CONNECT_TIMEOUT_DEFAULT,
+        ))
+        .arg(control_duration_arg(
+            "control_pre_start_timeout",
+            "control-pre-start-timeout",
+            "Timeout for the control-plane pre_start barrier",
+            ControlPlaneTimeouts::PRE_START_TIMEOUT_DEFAULT,
+        ))
+        .arg(control_duration_arg(
+            "control_post_start_timeout",
+            "control-post-start-timeout",
+            "Timeout for the control-plane post_start barrier",
+            ControlPlaneTimeouts::POST_START_TIMEOUT_DEFAULT,
+        ))
+        .arg(control_duration_arg(
+            "control_sync_state_timeout",
+            "control-sync-state-timeout",
+            "Timeout for the control-plane sync_state request during recovery",
+            ControlPlaneTimeouts::SYNC_STATE_TIMEOUT_DEFAULT,
+        ))
+        .arg(control_duration_arg(
+            "control_reconnect_grace_timeout",
+            "control-reconnect-grace-timeout",
+            "Grace period for all required control agents to reconnect",
+            ControlPlaneTimeouts::RECONNECT_GRACE_TIMEOUT_DEFAULT,
+        ))
+        .arg(control_duration_arg(
+            "control_pre_stop_timeout",
+            "control-pre-stop-timeout",
+            "Timeout for the control-plane pre_stop barrier",
+            ControlPlaneTimeouts::PRE_STOP_TIMEOUT_DEFAULT,
+        ))
+        .arg(control_duration_arg(
+            "control_post_stop_timeout",
+            "control-post-stop-timeout",
+            "Timeout for the control-plane post_stop barrier",
+            ControlPlaneTimeouts::POST_STOP_TIMEOUT_DEFAULT,
+        ))
+        .arg(control_duration_arg(
+            "control_task_drain_timeout",
+            "control-task-drain-timeout",
+            "Maximum time to wait for data-plane tasks to drain during controlled shutdown",
+            TASK_DRAIN_TIMEOUT_DEFAULT,
+        ))
         .get_matches();
 
     let local_addr: SocketAddr = matches
@@ -164,6 +215,32 @@ async fn main() -> io::Result<()> {
         .get_many::<String>("control_target")
         .map(|targets| targets.cloned().collect())
         .unwrap_or_default();
+    let control_timeouts = ControlPlaneTimeouts {
+        connect_timeout: *matches
+            .get_one::<std::time::Duration>("control_connect_timeout")
+            .unwrap(),
+        pre_start_timeout: *matches
+            .get_one::<std::time::Duration>("control_pre_start_timeout")
+            .unwrap(),
+        post_start_timeout: *matches
+            .get_one::<std::time::Duration>("control_post_start_timeout")
+            .unwrap(),
+        sync_state_timeout: *matches
+            .get_one::<std::time::Duration>("control_sync_state_timeout")
+            .unwrap(),
+        reconnect_grace_timeout: *matches
+            .get_one::<std::time::Duration>("control_reconnect_grace_timeout")
+            .unwrap(),
+        pre_stop_timeout: *matches
+            .get_one::<std::time::Duration>("control_pre_stop_timeout")
+            .unwrap(),
+        post_stop_timeout: *matches
+            .get_one::<std::time::Duration>("control_post_stop_timeout")
+            .unwrap(),
+    };
+    let task_drain_timeout = *matches
+        .get_one::<std::time::Duration>("control_task_drain_timeout")
+        .unwrap();
     let handshake_packet: Option<Vec<u8>> = matches
         .get_one::<String>("handshake_packet")
         .map(fs::read)
@@ -174,7 +251,7 @@ async fn main() -> io::Result<()> {
         Some(local_addr.to_string()),
         Some(remote_addr.to_string()),
     );
-    let control_plane = start_control_plane(&control_targets, control_state).await?;
+    let control_plane = start_control_plane(&control_targets, control_state, control_timeouts).await?;
 
     let num_cpus = num_cpus::get();
     info!("{} cores available", num_cpus);
@@ -404,7 +481,7 @@ async fn main() -> io::Result<()> {
                 &task_group,
                 &control_plane,
                 stop_reason,
-                TASK_DRAIN_TIMEOUT,
+                task_drain_timeout,
             ).await;
 
             exit_result
@@ -417,7 +494,7 @@ async fn main() -> io::Result<()> {
                 &task_group,
                 &control_plane,
                 StopReason::Signal,
-                TASK_DRAIN_TIMEOUT,
+                task_drain_timeout,
             ).await;
 
             Ok(())
@@ -430,10 +507,25 @@ async fn main() -> io::Result<()> {
                 &task_group,
                 &control_plane,
                 StopReason::AgentDisconnect,
-                TASK_DRAIN_TIMEOUT,
+                task_drain_timeout,
             ).await;
 
             Ok(())
         }
     }
+}
+
+fn control_duration_arg(
+    name: &'static str,
+    long: &'static str,
+    help: &'static str,
+    default_value: &'static str,
+) -> Arg {
+    Arg::new(name)
+        .long(long)
+        .required(false)
+        .value_name("DURATION")
+        .help(help)
+        .default_value(default_value)
+        .value_parser(parse_duration_arg)
 }

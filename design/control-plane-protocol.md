@@ -27,6 +27,11 @@ Rules:
 1. If no `--control-target` is passed, control-plane is disabled.
 2. If one or more `--control-target` values are passed, every configured target becomes mandatory.
 3. Startup fails if any configured agent cannot be connected within timeout.
+4. Phase and recovery deadlines can be tuned with these optional duration flags:
+   `--control-connect-timeout`, `--control-pre-start-timeout`,
+   `--control-post-start-timeout`, `--control-sync-state-timeout`,
+   `--control-reconnect-grace-timeout`, `--control-pre-stop-timeout`,
+   `--control-post-stop-timeout`, and `--control-task-drain-timeout`.
 
 ## 3. Connection Behavior
 
@@ -151,6 +156,9 @@ Top-level response fields:
 - `addr6`: kernel-reported IPv6 CIDR on the TUN interface when available
 - `peer4`: kernel-reported IPv4 point-to-point peer/destination CIDR when available
 - `peer6`: kernel-reported IPv6 point-to-point peer/destination CIDR when available
+
+`deadline_ms` is derived from the active phase timeout on the Phantun side. It is
+sent as a hint to the agent, which may still apply a stricter local timeout.
 
 ## 7. Lifecycle States
 

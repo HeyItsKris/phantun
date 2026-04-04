@@ -271,6 +271,11 @@ If one or more targets are configured, all of them become required lifecycle par
 Protocol and message schema are documented in [design/control-plane-protocol.md](design/control-plane-protocol.md).
 The bundled shell-based reference agent and templates live under
 [tools/control-plane-shell-agent](tools/control-plane-shell-agent).
+Control-plane timing can be tuned with human-readable duration flags such as
+`--control-connect-timeout`, `--control-pre-start-timeout`, `--control-post-start-timeout`,
+`--control-sync-state-timeout`, `--control-reconnect-grace-timeout`,
+`--control-pre-stop-timeout`, `--control-post-stop-timeout`, and
+`--control-task-drain-timeout` (examples: `500ms`, `2s`, `1m`).
 
 [Back to TOC](#table-of-contents)
 
